@@ -7,7 +7,7 @@
 
 use crowdb_console_shared::deployment::target;
 use crowdb_diskdb_client::{DiskdbClient, DiskdbRpcTransport};
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient, ServiceRegistryClient};
 use crowdb_protocol::{
     common::ChunkId,
     diskdb::rpc::{AllocateBlocksRequest, FreeBlocksRequest},
@@ -23,7 +23,7 @@ async fn mixed_disk_workload_normalizes_frees_predating_its_baseline() {
         .await
         .unwrap();
     selected.require_native_transport().await.unwrap();
-    let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(
+    let kv = Arc::new(PaxosKvClient::new(ClientConfig::new(
         selected.identity.group0_management_endpoints.clone(),
     )));
     kv.seed_leader(0, 0, selected.identity.group0_rpc_endpoints[0].clone());

@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="880" viewBox="0 0 1400 880" role="img" aria-labelledby="title desc">
+<!-- Copyright 2026-present Gian; Licensed under the Apache License, Version 2.0. -->
+<title id="title">Iceberg read: the URI already carries the storage location</title><desc id="desc">Native direct URIs remove the Iceberg file-record lookup from each data-file read.</desc>
+<defs>
+<marker id="ink" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" fill="#132b3c"/></marker>
+<marker id="muted" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" fill="#526879"/></marker>
+<marker id="blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" fill="#2463a5"/></marker>
+<marker id="teal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" fill="#007f78"/></marker>
+<marker id="purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" fill="#7461a8"/></marker>
+<marker id="gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" fill="#6d8493"/></marker>
+</defs>
+<rect width="1400" height="880" rx="20" fill="#fbfcfd"/>
+<g font-family="Arial, Helvetica, sans-serif">
+<text x="42" y="49" font-size="27" fill="#132b3c" text-anchor="start" font-weight="700">Iceberg read: the URI already carries the storage location</text>
+<text x="42" y="80" font-size="16" fill="#526879" text-anchor="start" font-weight="400">Native direct URIs remove the Iceberg file-record lookup from each data-file read.</text>
+<rect x="40" y="130" width="400" height="84" rx="12" fill="#eaf1fb" stroke="#2463a5" stroke-width="1.3"/>
+<text x="240.0" y="167.0" font-size="19" fill="#132b3c" text-anchor="middle" font-weight="600">Load table + select snapshot</text>
+<text x="240.0" y="190.0" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">REST catalog and canonical table metadata</text>
+<rect x="500" y="130" width="400" height="84" rx="12" fill="#eaf1fb" stroke="#2463a5" stroke-width="1.3"/>
+<text x="700.0" y="167.0" font-size="19" fill="#132b3c" text-anchor="middle" font-weight="600">Read manifests</text>
+<text x="700.0" y="190.0" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Manifest list → manifests → selected files</text>
+<rect x="960" y="130" width="400" height="84" rx="12" fill="#eaf1fb" stroke="#2463a5" stroke-width="1.3"/>
+<text x="1160.0" y="167.0" font-size="19" fill="#132b3c" text-anchor="middle" font-weight="600">Select a Parquet file URI</text>
+<text x="1160.0" y="190.0" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">The same URI published by native upload</text>
+<polyline points="440,172 500,172" fill="none" stroke="#2463a5" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#blue)"/>
+<polyline points="900,172 960,172" fill="none" stroke="#2463a5" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#blue)"/>
+<polyline points="1160,214 1160,270" fill="none" stroke="#7461a8" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#purple)"/>
+<rect x="40" y="270" width="1320" height="100" rx="12" fill="#132b3c" stroke="#132b3c" stroke-width="1.3"/>
+<text x="700.0" y="304.0" font-size="23" fill="#fff" text-anchor="middle" font-weight="600">URI → authenticated native descriptor</text>
+<text x="700.0" y="327.0" font-size="14" fill="#c7dce4" text-anchor="middle" font-weight="400">Chunk ID + root offset + lengths + integrity + file identity</text>
+<text x="700.0" y="350.0" font-size="14" fill="#c7dce4" text-anchor="middle" font-weight="400">A stable storage reference, independent of current replica addresses</text>
+<polyline points="700,370 700,415" fill="none" stroke="#7461a8" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#purple)"/>
+<rect x="40" y="415" width="1320" height="230" rx="17" fill="#e4f5f1" stroke="#007f78" stroke-width="1.3"/>
+<text x="60" y="448" font-size="20" fill="#007f78" text-anchor="start" font-weight="600">Direct file read · no Iceberg file metadata lookup</text>
+<rect x="65" y="490" width="380" height="105" rx="12" fill="#e4f5f1" stroke="#007f78" stroke-width="1.3"/>
+<text x="255.0" y="526.5" font-size="19" fill="#132b3c" text-anchor="middle" font-weight="600">Validate grant + locator</text>
+<text x="255.0" y="549.5" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Check scope and signature</text>
+<text x="255.0" y="572.5" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Reconstruct the descriptor from the URI</text>
+<rect x="510" y="490" width="380" height="105" rx="12" fill="#e4f5f1" stroke="#007f78" stroke-width="1.3"/>
+<text x="700.0" y="526.5" font-size="19" fill="#132b3c" text-anchor="middle" font-weight="600">Read the verified Chunk root</text>
+<text x="700.0" y="549.5" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Follow only the requested file range</text>
+<text x="700.0" y="572.5" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Bounded directory traversal</text>
+<rect x="955" y="490" width="380" height="105" rx="12" fill="#e4f5f1" stroke="#007f78" stroke-width="1.3"/>
+<text x="1145.0" y="526.5" font-size="19" fill="#132b3c" text-anchor="middle" font-weight="600">Chunk client → DiskIO</text>
+<text x="1145.0" y="549.5" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Resolve mirror / EC layout</text>
+<text x="1145.0" y="572.5" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Read the selected bytes from disks</text>
+<polyline points="445,542 510,542" fill="none" stroke="#007f78" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#teal)"/>
+<polyline points="890,542 955,542" fill="none" stroke="#007f78" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#teal)"/>
+<polyline points="1145,595 1145,680 700,680 700,715" fill="none" stroke="#007f78" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#teal)"/>
+<rect x="390" y="715" width="620" height="85" rx="12" fill="#132b3c" stroke="#132b3c" stroke-width="1.3"/>
+<text x="700.0" y="752.5" font-size="21" fill="#fff" text-anchor="middle" font-weight="600">Stream verified bytes to the analytical engine</text>
+<text x="700.0" y="775.5" font-size="14" fill="#c7dce4" text-anchor="middle" font-weight="400">GET / Range GET · bounded buffers · consumer backpressure</text>
+<text x="700" y="842" font-size="16" fill="#526879" text-anchor="middle" font-weight="400">Catalog planning and Chunk layout routing remain; the per-file Iceberg KV lookup is removed.</text>
+<text x="1358" y="858" font-size="12" fill="#526879" text-anchor="end" font-weight="400">CROWDB</text>
+</g></svg>

@@ -2,33 +2,15 @@
 // Licensed under the Apache License, Version 2.0.
 
 use crowdb_chunk_kv::{CrowdbPartitionTree, MutationOperation, PartitionTree};
-use crowdb_tree_ffi::{ChunkPageStoreOptions, ChunkRootCatalog, Config, PageStore};
-use std::sync::Arc;
+use crowdb_tree_ffi::chunk::test_util::TestChunkBackend;
 
-#[tokio::test]
-async fn native_checkpoint_drives_chunk_io_completions_and_publishes_the_exact_frontier() {
-    let store = Arc::new(
-        PageStore::open_chunk(
-            ChunkPageStoreOptions {
-                tree_id: 91,
-                owner_epoch: 1,
-                open_generation: 0,
-                pack_bytes: 65_501,
-                iu_size: 1,
-                max_concurrent_packs: 4,
-                materialization_bytes_per_pass: 1024 * 1024,
-                max_chunk_bytes: 1024 * 1024,
-                mirror_copies: 0,
-            },
-            Arc::new(ChunkRootCatalog::open_memory(1).unwrap()),
-            None,
-        )
-        .unwrap(),
-    );
-    let config = Config {
-        page_store: Some(store.clone()),
-        ..Config::default()
-    };
+async fn check_native_checkpoint(frame_bytes: u32, reclaim_bytes: usize) {
+    let mut backend = TestChunkBackend::new(91, 1).unwrap();
+    let store = backend.page_store(0).unwrap();
+    let mut config = backend.config();
+    config.page_store = Some(store.clone());
+    config.frame_bytes = frame_bytes;
+    config.runtime_binding.limits.reclaim_bytes = reclaim_bytes;
     let tree = CrowdbPartitionTree::open(91, &config).unwrap();
     for sequence in 1_u64..=32 {
         tree.apply(
@@ -41,17 +23,24 @@ async fn native_checkpoint_drives_chunk_io_completions_and_publishes_the_exact_f
         .await
         .unwrap();
     }
-    assert_eq!(store.chunk_stats().unwrap().completion_wakeups, 0);
+    let completed_before = backend.runtime.snapshot().unwrap().backend.completed;
     let (generation, applied) = tree.checkpoint(4096).await.unwrap();
     assert!(generation > 0);
     assert_eq!(applied, 32);
     assert_eq!(store.wal_replay_offset().unwrap(), 4096);
     assert!(
-        store.chunk_stats().unwrap().completion_wakeups > 0,
+        backend.runtime.snapshot().unwrap().backend.completed > completed_before,
         "native checkpoints must drive the asynchronous chunk IO completion path"
     );
-    assert!(store.chunk_estimated_bytes().unwrap() >= 2 * 1024 * 1024);
+    assert!(tree.backing_stats().unwrap().unwrap().allocated_bytes >= 2 * 1024 * 1024);
     drop(tree);
+    drop(config);
+    drop(store);
+    backend.next_writer().unwrap();
+    let mut config = backend.config();
+    config.page_store = Some(backend.page_store(0).unwrap());
+    config.frame_bytes = frame_bytes;
+    config.runtime_binding.limits.reclaim_bytes = reclaim_bytes;
 
     let recovered = CrowdbPartitionTree::open(91, &config).unwrap();
     assert_eq!(recovered.checkpoint_state().unwrap(), (generation, applied));
@@ -63,4 +52,14 @@ async fn native_checkpoint_drives_chunk_io_completions_and_publishes_the_exact_f
             vec![u8::try_from(sequence % 251).unwrap(); 64 * 1024]
         );
     }
+}
+
+#[tokio::test]
+async fn native_checkpoint_drives_chunk_io_completions_and_publishes_the_exact_frontier() {
+    check_native_checkpoint(64 * 1024, 64 * 1024 * 1024).await;
+}
+
+#[tokio::test]
+async fn small_frames_checkpoint_with_sufficient_host_pin_capacity() {
+    check_native_checkpoint(4096, 64 * 1024 * 1024).await;
 }

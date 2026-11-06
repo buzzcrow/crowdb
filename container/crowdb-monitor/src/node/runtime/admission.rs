@@ -25,7 +25,7 @@ pub(super) async fn validate(
         return Err("admission operation cancelled".into());
     }
     let discovery_id = NodeIdentity::load_or_create(root)?.uuid().to_string();
-    let client = crowdb_kv_client::CrowdbKvClient::new(crowdb_kv_client::ClientConfig::new(
+    let client = crowdb_paxos_kv_client::PaxosKvClient::new(crowdb_paxos_kv_client::ClientConfig::new(
         grant.management_seeds.clone(),
     ));
     let publication = tokio::time::timeout(
@@ -34,12 +34,12 @@ pub(super) async fn validate(
             0,
             0,
             crowdb_console_shared::deployment::CLUSTER_KEY,
-            crowdb_kv_client::ReadMode::Linearizable,
+            crowdb_paxos_kv_client::ReadMode::Linearizable,
             None,
         ),
     )
     .await??;
-    let crowdb_kv_client::GetOutcome::Found { value, .. } = publication else {
+    let crowdb_paxos_kv_client::GetOutcome::Found { value, .. } = publication else {
         return Err("cluster publication unavailable".into());
     };
     let publication: crowdb_console_shared::deployment::PreparedBootstrap = serde_json::from_slice(&value)?;

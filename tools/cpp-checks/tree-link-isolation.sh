@@ -25,11 +25,25 @@ link_libraries=(
     "$build_dir/crowdb-common-build/libcrowdbcommon.a"
     -luring -llz4 -lspdlog -lfmt -lz -lisal -lfolly -lglog -lgflags -levent -ldl -pthread
 )
+if [[ $(sed -n 's/^CROWDB_RPC_ENABLE_RDMA:BOOL=//p' "$build_dir/CMakeCache.txt") == ON ]]; then
+    ibverbs_library=$(sed -n 's/^IBVERBS_LIB:FILEPATH=//p' "$build_dir/CMakeCache.txt")
+    rdmacm_library=$(sed -n 's/^RDMACM_LIB:FILEPATH=//p' "$build_dir/CMakeCache.txt")
+    if [[ -f "$ibverbs_library" && -f "$rdmacm_library" ]]; then
+        link_libraries+=("$ibverbs_library" "$rdmacm_library")
+    fi
+fi
 
-for compiler in g++ clang++; do
-    command -v "$compiler" >/dev/null
-    "$compiler" -std=c++20 -fsyntax-only "${include_flags[@]}" "$fixture_dir/public_header.cpp"
-done
+g++ -std=c++20 -fsyntax-only "${include_flags[@]}" "$fixture_dir/public_header.cpp"
+if command -v clang++ >/dev/null; then
+    clang_cxx=(clang++)
+elif command -v clang-23 >/dev/null; then
+    # The locked Pixi environment provides the versioned Clang driver.
+    clang_cxx=(clang-23 --driver-mode=g++)
+else
+    echo "tree link isolation requires clang++ or the Pixi clang-23 driver" >&2
+    exit 1
+fi
+"${clang_cxx[@]}" -std=c++20 -fsyntax-only "${include_flags[@]}" "$fixture_dir/public_header.cpp"
 
 c++ -std=c++20 "${include_flags[@]}" "$fixture_dir/local.cpp" "${link_libraries[@]}" \
     -Wl,-Map="$probe_dir/tree-link-local.map" -o "$probe_dir/tree-link-local"

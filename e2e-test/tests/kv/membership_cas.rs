@@ -2,13 +2,13 @@
 // Licensed under the Apache License, Version 2.0.
 
 use crate::common::management::{addresses, client as http_client, origin, wait_for_leader};
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, Error, GroupMembershipClient};
+use crowdb_paxos_kv_client::{ClientConfig, Error, GroupMembershipClient, PaxosKvClient};
 use crowdb_protocol::kv_membership::{GroupMember, GroupMembershipState};
 
 async fn client() -> GroupMembershipClient {
     let ips = addresses(1);
     wait_for_leader(&http_client(), &origin(&ips[0])).await;
-    GroupMembershipClient::from_shared(std::sync::Arc::new(CrowdbKvClient::new(ClientConfig::new(vec![
+    GroupMembershipClient::from_shared(std::sync::Arc::new(PaxosKvClient::new(ClientConfig::new(vec![
         origin(&ips[0]),
     ]))))
 }

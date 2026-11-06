@@ -37,9 +37,7 @@ crowdb_rpc_buffer_t wrap_data(Buffer *buffer, uint64_t request_id)
         return nullptr;
     buffer->set_metadata(request_id, buffer->stream_id, buffer->sequence, buffer->logical_offset,
                          buffer->registration_id);
-    auto handle = std::make_unique<crowdb_rpc_buffer_s>();
-    handle->buf = buffer->ref_clone();
-    return handle->buf == nullptr ? nullptr : handle.release();
+    return wrap_owned_buffer(buffer->ref_clone());
 }
 } // namespace
 

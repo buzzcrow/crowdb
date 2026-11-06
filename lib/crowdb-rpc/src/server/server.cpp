@@ -186,7 +186,6 @@ void RpcServer::start()
         if (!transport_->listen_rdma_service(listen_addr_, listen_port_))
             CRB_LOG_WARN("rpc server: RDMA listener unavailable; TCP remains active");
     }
-    transport_->start();
     // Register the listen fd with the I/O worker's epoll loop instead of
     // a dedicated acceptor thread. The worker's epoll loop is already
     // woken by I/O events, so accept is not starved under CPU contention.
@@ -198,6 +197,9 @@ void RpcServer::start()
         transport_->set_accept_handler([this](int fd) { handle_accept(fd); });
         transport_->add_listen_fd(listen_fd_);
     }
+    // Publish handlers and listener registration before any worker can read
+    // them. They stay immutable until all workers have joined in stop().
+    transport_->start();
 }
 
 void RpcServer::stop()
@@ -209,10 +211,14 @@ void RpcServer::stop()
     if (was_running) {
         CRB_LOG_INFO("rpc server: stopping");
     }
-    // Clear the accept handler before closing the listen fd so the
-    // worker doesn't call accept() on a closed fd during shutdown.
+    // Join workers before destroying their accept callback or closing its fd.
+    // running_ already prevents an active accept loop from draining more work.
+    if (was_running) {
+        transport_->stop();
+    }
     transport_->set_accept_handler(nullptr);
     if (listen_fd_ >= 0) {
+        transport_->remove_listen_fd(listen_fd_);
         ::close(listen_fd_);
         listen_fd_ = -1;
     }
@@ -224,9 +230,6 @@ void RpcServer::stop()
     if (listener_lock_fd_ >= 0) {
         ::close(listener_lock_fd_);
         listener_lock_fd_ = -1;
-    }
-    if (was_running) {
-        transport_->stop();
     }
 }
 

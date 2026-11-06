@@ -304,11 +304,11 @@ async fn multiple_racks_and_nodes_create_expected_workspaces() {
 
     assert!(std::fs::read_dir(dir.join("N-1/bin")).unwrap().next().is_some());
     assert!(dir
-        .join(format!("N-1/log/crowdb-kv-server-{pid1}.out.log"))
+        .join(format!("N-1/log/crowdb-paxos-kv-server-{pid1}.out.log"))
         .exists());
     assert!(std::fs::read_dir(dir.join("N-10/bin")).unwrap().next().is_some());
     assert!(dir
-        .join(format!("N-10/log/crowdb-kv-server-{pid10}.out.log"))
+        .join(format!("N-10/log/crowdb-paxos-kv-server-{pid10}.out.log"))
         .exists());
     assert!(std::fs::read_dir(dir.join("N-2/bin")).unwrap().next().is_none());
 

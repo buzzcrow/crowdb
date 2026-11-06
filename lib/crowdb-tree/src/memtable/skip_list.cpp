@@ -22,17 +22,19 @@ constexpr uint32_t kBranching = 4; // 1/4 probability of height increase
 
 // --- Node allocation ---
 
-Node *ConcurrentSkipList::alloc_node(uint32_t height, Slice key)
+Node *ConcurrentSkipList::alloc_node(uint32_t height, Slice key, const std::shared_ptr<AllocationBudget> &budget)
 {
-    size_t sz = Node::alloc_size(height, key.size());
-    void  *p  = ::operator new(sz);
+    size_t          sz = Node::alloc_size(height, key.size());
+    AllocationLease credit(budget, sz, AllocationKind::kMetadata);
+    void           *p = ::operator new(sz);
     // Construct the node metadata with
     // placement new — the atomics need proper initialization, not just raw
     // memory. The tower (next_ptr) is constructed separately below since it
     // lives beyond sizeof(Node).
-    Node *n     = new (p) Node{};
-    n->height_  = height;
-    n->key_len_ = static_cast<uint32_t>(key.size());
+    Node *n              = new (p) Node{};
+    n->allocation_credit = std::move(credit);
+    n->height_           = height;
+    n->key_len_          = static_cast<uint32_t>(key.size());
     // Construct the tower (next_[0..height-1]) with placement new.
     for (uint32_t i = 0; i < height; ++i) {
         new (n->next_ptr(i)) std::atomic<Node *>(nullptr);
@@ -46,7 +48,8 @@ Node *ConcurrentSkipList::alloc_node(uint32_t height, Slice key)
 
 void ConcurrentSkipList::free_node(void *p)
 {
-    Node *n = static_cast<Node *>(p);
+    Node *n      = static_cast<Node *>(p);
+    auto  credit = std::move(n->allocation_credit);
     // Destroy the atomic objects in the tower, then the Node base, then free.
     for (uint32_t i = 0; i < n->height_; ++i) {
         n->next_ptr(i)->~atomic();
@@ -57,25 +60,35 @@ void ConcurrentSkipList::free_node(void *p)
 
 // --- ConcurrentSkipList ---
 
-ConcurrentSkipList::ConcurrentSkipList(EpochManager *epoch)
-    : owned_epoch_(epoch == nullptr ? std::make_unique<EpochManager>() : nullptr),
-      epoch_(epoch == nullptr ? owned_epoch_.get() : epoch)
+ConcurrentSkipList::ConcurrentSkipList(EpochManager *epoch, std::shared_ptr<AllocationBudget> budget)
+    : epoch_credit_(budget, epoch == nullptr ? sizeof(EpochManager) : 0, AllocationKind::kMetadata),
+      owned_epoch_(epoch == nullptr ? std::make_unique<EpochManager>(budget, true) : nullptr),
+      epoch_(epoch == nullptr ? owned_epoch_.get() : epoch),
+      budget_(std::move(budget))
 {
-    head_ = alloc_node(kMaxHeight, Slice());
+    head_ = alloc_node(kMaxHeight, Slice(), budget_);
 }
 
-ConcurrentSkipList::~ConcurrentSkipList()
+bool ConcurrentSkipList::retire_step() noexcept
 {
-    Node *node = head_->next(0);
-    while (node != nullptr) {
-        Node *next    = node->next(0);
+    auto *node = head_->next(0);
+    for (size_t step = 0; node != nullptr && step < 64; ++step) {
+        auto *next    = node->next(0);
         node->destroy = [](EpochManager::Deferred *entry) noexcept {
             auto *n = static_cast<Node *>(entry);
-            delete n->versions_.load(std::memory_order_relaxed);
+            VersionSet::Deleter{}(n->versions_.load(std::memory_order_relaxed));
             free_node(n);
         };
         epoch_->defer(node);
         node = next;
+    }
+    head_->set_next(0, node);
+    return node == nullptr;
+}
+
+ConcurrentSkipList::~ConcurrentSkipList()
+{
+    while (!retire_step()) {
     }
     free_node(head_);
 }
@@ -131,7 +144,7 @@ Node *ConcurrentSkipList::find_or_insert(Slice key, VersionSet *versions, bool *
             return next[0];
         }
         if (candidate == nullptr) {
-            candidate = alloc_node(random_height(), key);
+            candidate = alloc_node(random_height(), key, versions->history.get_allocator().owner());
             candidate->allocation.set(epoch_->memtable_allocation(), Node::alloc_size(candidate->height_, key.size()));
             candidate->versions_.store(versions, std::memory_order_relaxed);
         }
@@ -139,6 +152,7 @@ Node *ConcurrentSkipList::find_or_insert(Slice key, VersionSet *versions, bool *
         if (prev[0]->next_ptr(0)->compare_exchange_strong(next[0], candidate, std::memory_order_acq_rel)) {
             count_.fetch_add(1, std::memory_order_relaxed);
             bytes_.fetch_add(key.size() + versions->bytes, std::memory_order_relaxed);
+            account_node(*candidate, *versions);
 #ifdef CROWDB_TREE_TEST_UTIL
             if (test_hook_ != nullptr) {
                 test_hook_(test_context_, PausePoint::kAfterLevelZero, key);
@@ -243,15 +257,23 @@ ConcurrentSkipList::Cursor ConcurrentSkipList::cursor_reverse(Slice start_key, b
 
 void ConcurrentSkipList::Cursor::select()
 {
-    candidate_ = nullptr;
+    candidate_       = nullptr;
+    candidate_owner_ = nullptr;
     while (cur_ != nullptr) {
-        auto *versions = cur_->versions_.load(std::memory_order_acquire);
-        candidate_     = versions->at(frontier_);
+        if (upper_.has_value() && cur_->key_slice() >= *upper_) {
+            cur_ = nullptr;
+            return;
+        }
+        auto *versions   = cur_->versions_.load(std::memory_order_acquire);
+        candidate_owner_ = versions->owner_at(frontier_);
+        candidate_       = candidate_owner_ != nullptr ? candidate_owner_->get() : nullptr;
         if (candidate_ != nullptr && (floor_ == 0 || candidate_->slot > floor_)) {
             return;
         }
         cur_ = cur_->next(0);
     }
+    candidate_       = nullptr;
+    candidate_owner_ = nullptr;
 }
 
 void ConcurrentSkipList::Cursor::advance()
@@ -265,6 +287,15 @@ void ConcurrentSkipList::Cursor::advance()
 ConcurrentSkipList::Cursor ConcurrentSkipList::prefix_cursor(uint64_t frontier, uint64_t floor) const
 {
     return Cursor(head_->next(0), frontier, floor);
+}
+
+ConcurrentSkipList::Cursor ConcurrentSkipList::range_cursor(std::optional<Slice> lower, std::optional<Slice> upper,
+                                                            uint64_t frontier, uint64_t floor) const
+{
+    if (floor > frontier || (lower.has_value() && upper.has_value() && *lower >= *upper)) {
+        return {};
+    }
+    return Cursor(lower.has_value() ? find_ge(*lower, nullptr) : head_->next(0), frontier, floor, upper);
 }
 
 } // namespace crowdb::tree

@@ -7,6 +7,7 @@
 #include "crowdb-rpc/rpc_metrics.h"
 #include "crowdb-rpc/transport/socket_transport.h" // TransportStats
 
+#include <sys/socket.h>
 #include <sys/uio.h>
 #include <unistd.h>
 
@@ -281,7 +282,16 @@ retry:
             break;
         }
 
+        // A disconnected peer is a connection error, regardless of the host
+        // application's process-wide SIGPIPE disposition.
+#ifdef MSG_NOSIGNAL
+        msghdr message{};
+        message.msg_iov    = iovs;
+        message.msg_iovlen = static_cast<decltype(message.msg_iovlen)>(iov_count);
+        ssize_t written    = ::sendmsg(fd, &message, MSG_NOSIGNAL);
+#else
         ssize_t written = ::writev(fd, iovs, iov_count);
+#endif
         if (stats != nullptr)
             stats->writev_calls.fetch_add(1, std::memory_order_relaxed);
         if (written > 0) {
@@ -375,6 +385,7 @@ retry:
             discarded_count = drain_send_queue(discarded, BATCH_MAX);
         }
     }
+    has_partials_.store(pending_count_ != 0, std::memory_order_relaxed);
     in_send_.store(false, std::memory_order_release);
 
     // Race check: if more frames arrived while we were sending, retry.
@@ -403,6 +414,7 @@ void Connection::close()
             release_frame(pending_frames_[i]);
         }
         pending_count_ = 0;
+        has_partials_.store(false, std::memory_order_relaxed);
         OutFrame *discarded[BATCH_MAX];
         int       discarded_count = drain_overflow(discarded, BATCH_MAX);
         while (discarded_count > 0) {

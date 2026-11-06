@@ -1,16 +1,16 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use crowdb_kv::cluster::{
-    group::PxGroup, kv_server::KvServer, PxKvStore, PxLocalReplica, PxLocalReplicaRole,
+use crowdb_paxos_kv::cluster::{
+    group::PxGroup, paxos_kv_server::PaxosKvServer, PxKvStore, PxLocalReplica, PxLocalReplicaRole,
 };
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient};
 use crowdb_protocol::chunk_kv::{DomainFailurePolicy, DomainMonitorDescriptor};
 use std::sync::Arc;
 
 pub struct TestProcessKv {
     pub store: Arc<PxKvStore>,
-    pub kv: Arc<CrowdbKvClient>,
+    pub kv: Arc<PaxosKvClient>,
 }
 
 impl TestProcessKv {
@@ -21,7 +21,7 @@ impl TestProcessKv {
             PxLocalReplica::new(1, PxLocalReplicaRole::Leader),
         ));
         store.start().await.unwrap();
-        let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(vec![])));
+        let kv = Arc::new(PaxosKvClient::new(ClientConfig::new(vec![])));
         kv.seed_leader(0, 0, store.listen_addr().unwrap().to_string());
         Self { store, kv }
     }

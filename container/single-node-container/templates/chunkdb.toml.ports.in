@@ -1,0 +1,38 @@
+[slot_bootstrap]
+service_instances = [1]
+storage_groups = [{ store_id = 0, group_id = 1 }]
+
+[deployment]
+mode = "local"
+max_node_failures = 0
+
+[server]
+rpc_workers = 1
+http_listen_addr = "127.0.0.1:@CHUNKDB_HTTP_BASE@"
+rpc_listen_addr = "127.0.0.1:@CHUNKDB_RPC_BASE@"
+instance_id = "1"
+kv_server_mgmt_seeds = ["http://127.0.0.1:@PAXOS_KV_SERVER_MGMT_BASE@"]
+keepalive_interval_secs = 1
+kv_pool_size = 1
+kv_rpc_workers = 1
+diskdb_pool_size = 1
+diskdb_rpc_workers = 1
+
+[conversion_io]
+normal_connections_per_endpoint = 1
+priority_connections_per_endpoint = 1
+rpc_workers = 1
+
+[topology]
+refresh_interval_secs = 1
+
+[range_guard]
+allow_all_when_empty = false
+
+[lifecycle]
+cache_capacity = 10000
+sweep_chunk_lock_interval_secs = 60
+lock_hold_warn_threshold_ms = 1000
+
+[placement]
+mode = "unsafe_colocated"

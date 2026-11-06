@@ -3,7 +3,7 @@
 
 //! A restarted owner reports unknown occupancy until retained validation loads it.
 use super::native_context::TestNativeContext;
-use crowdb_kv_client::{GetOutcome, HardwareClient, ReadMode};
+use crowdb_paxos_kv_client::{GetOutcome, HardwareClient, ReadMode};
 use crowdb_protocol::{
     key::{DiskKey, OwnerMapKey, TextKey},
     DiskIdExt,

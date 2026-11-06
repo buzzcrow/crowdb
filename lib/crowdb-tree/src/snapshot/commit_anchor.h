@@ -5,6 +5,7 @@
 #include "crowdb-tree/backend/block_page_store.h"
 #include "crowdb-tree/backend/page_store.h"
 
+#include <span>
 #include <vector>
 
 namespace crowdb::tree::snapshot
@@ -34,7 +35,7 @@ struct CommitAnchor
     uint64_t root_page_id      = 0;
     uint64_t last_applied_slot = 0;
     uint64_t next_page_id      = 0;
-    uint32_t segment_slots     = 0; // MappingTable::kSegmentSize at persist time (format guard)
+    uint32_t segment_slots     = 0; // kMappingSegmentSize at persist time (format guard)
     uint64_t segdir_addr       = 0;
     uint32_t segdir_len        = 0;
     uint32_t segdir_crc        = 0;
@@ -42,6 +43,9 @@ struct CommitAnchor
     uint64_t inner_count       = 0; // live inner pages (O(1) gauge, restored on open)
 };
 
-void   encode_anchor(const CommitAnchor &anchor, uint64_t slot_bytes, std::vector<uint8_t> *out);
+void encode_anchor(const CommitAnchor &anchor, uint64_t slot_bytes, std::vector<uint8_t> *out);
+// Allocation-free validation of the fixed fields; trailing IU padding is
+// ignored. Returns false for short input/null output and leaves output intact.
+bool   decode_anchor(std::span<const uint8_t> input, CommitAnchor *out);
 Status read_valid_anchors(const PageStore &store, uint32_t iu, std::vector<CommitAnchor> *out);
 } // namespace crowdb::tree::snapshot

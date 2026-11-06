@@ -11,7 +11,7 @@ use crowdb_chunk_kv_client::{
     BatchItem, ChunkKvClient, ChunkKvRpcTransport, ChunkKvRpcTransportConfig, ClientConfig,
     Group0ChunkKvRangeCatalogSource,
 };
-use crowdb_kv_client::{ClientConfig as ControlConfig, CrowdbKvClient};
+use crowdb_paxos_kv_client::{ClientConfig as ControlConfig, PaxosKvClient};
 use crowdb_protocol::chunk_kv::PointOperation;
 use crowdb_rpc_ffi::RdmaConfig;
 use futures::{stream::FuturesUnordered, StreamExt};
@@ -71,7 +71,7 @@ impl TestRoutedBatch {
         if seeds.is_empty() {
             return Err("measurement requires explicit management seeds".into());
         }
-        let control = Arc::new(CrowdbKvClient::new(ControlConfig::new(seeds)));
+        let control = Arc::new(PaxosKvClient::new(ControlConfig::new(seeds)));
         let config = ClientConfig::default();
         let partition_group_concurrency = config.max_inflight_partition_groups;
         let native = Arc::new(ChunkKvRpcTransport::with_config(

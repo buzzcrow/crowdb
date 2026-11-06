@@ -198,6 +198,8 @@ fn disk_read_request_round_trip() {
             zone_offset: 8192,
             size: 2048,
             test_pattern_offset: 0x1234,
+            read_create_time_ms: 0,
+            fence_probe: false,
         },
     );
     fbb.finish(req, None);

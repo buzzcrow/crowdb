@@ -6,6 +6,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crowdb_protocol::chunk_kv::{ChunkKvResponse, ChunkKvRpcErrorCode};
 use serde::Serialize;
 
+mod resources;
+pub use resources::TreeResources;
+
 #[derive(Debug, Default)]
 pub struct ServerMetrics {
     requests: AtomicU64,
@@ -151,7 +154,8 @@ fn increment(counter: &AtomicU64) {
     counter.fetch_add(1, Ordering::Relaxed);
 }
 
-/// Starts periodic stream phase output alongside the service logs.
+/// Creates periodic stream phase output alongside the service logs.
+/// Install the Tree sampler before calling `start()`.
 /// Zero interval disables output. Call `stop().await` to flush the last window.
 ///
 /// # Errors
@@ -159,7 +163,7 @@ fn increment(counter: &AtomicU64) {
 ///
 /// # Panics
 /// Panics if the metrics registry is poisoned or a histogram name conflicts.
-pub fn start_stream_perf_log(
+pub fn create_perf_log(
     log_dir: &str,
     interval_secs: u64,
     max_file_mb: usize,
@@ -171,10 +175,9 @@ pub fn start_stream_perf_log(
     let file =
         crowdb_common::logging::open_metrics_log(log_dir, "crowdb-chunk-kv-server", max_file_mb, max_files)
             .map_err(std::io::Error::other)?;
-    let mut runner = crowdb_common::metrics::MetricsRunner::new(file, interval_secs);
+    let runner = crowdb_common::metrics::MetricsRunner::new(file, interval_secs);
     crowdb_chunk_stream::register_stream_perf_metrics(
         &mut runner.registry().lock().expect("metrics registry poisoned"),
     );
-    runner.start();
     Ok(Some(runner))
 }

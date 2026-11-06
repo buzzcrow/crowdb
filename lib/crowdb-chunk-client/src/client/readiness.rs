@@ -3,7 +3,7 @@
 
 //! Read-only ChunkDB and physical DiskIO evidence through current client routes.
 
-use crowdb_kv_client::DiskRecord;
+use crowdb_paxos_kv_client::DiskRecord;
 use crowdb_protocol::{
     common::{DiskId, HwStatus},
     diskdb::rpc::Segment,

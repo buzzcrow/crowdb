@@ -3,7 +3,7 @@
 
 //! HTTP client for `crowdb-web`'s two-tree API contract.
 //!
-//! `ServerClient` (sibling) targets a single `crowdb-kv-server`'s
+//! `ServerClient` (sibling) targets a single `crowdb-paxos-kv-server`'s
 //! management API and is used by `crowdb-web` itself. `ConsoleClient`
 //! lives one layer higher: it talks to `crowdb-web` over the public
 //! `/api/...` surface that the SPA and CLI both consume.
@@ -24,7 +24,7 @@ use crate::config::{NodeEntry, RackEntry, ServerEntry};
 use crate::error::{Error, Result};
 
 /// Thin wrapper around `reqwest::Client` bound to one `crowdb-web`
-/// console base URL (default `http://127.0.0.1:9090`).
+/// console base URL (default `http://127.0.0.1:6135`).
 #[derive(Debug, Clone)]
 pub struct ConsoleClient {
     base_url: String,
@@ -115,7 +115,7 @@ pub struct DeployNodeServerBody {
     /// `--send-queue-capacity` value for per-connection send queue.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub send_queue_capacity: Option<u32>,
-    /// Optional `--config` JSON path passed to the spawned `crowdb-kv-server`.
+    /// Optional `--config` JSON path passed to the spawned `crowdb-paxos-kv-server`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<String>,
 }
@@ -202,7 +202,7 @@ pub struct KvScanResponse {
     pub truncated: bool,
 }
 
-/// One row of `GET /api/servers` — a deployed `crowdb-kv-server` projected
+/// One row of `GET /api/servers` — a deployed `crowdb-paxos-kv-server` projected
 /// from the console config plus the monitor cache.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ServerSummary {
@@ -441,7 +441,7 @@ impl ConsoleClient {
         self.get_json("/api/servers").await
     }
 
-    /// Restart the `crowdb-kv-server` running on `node_id`. Stops the
+    /// Restart the `crowdb-paxos-kv-server` running on `node_id`. Stops the
     /// tracked process (if any) and re-deploys on the same ports
     /// recorded in the console config.
     ///
@@ -728,7 +728,7 @@ impl ConsoleClient {
 
     // ── HTTP plumbing ──────────────────────────────────────────────
     //
-    // Every helper attaches the current `x-crowdb-kv-corr-id` header (see
+    // Every helper attaches the current `x-crowdb-paxos-kv-corr-id` header (see
     // `crate::corr_id`) and emits one `log_ops_http` tracing record on
     // completion. The id comes from the task-local if a `corr_id::scope`
     // wraps the call (web handler / CLI main), otherwise we generate
@@ -907,7 +907,7 @@ mod tests {
 
     #[test]
     fn trims_trailing_slashes_in_base_url() {
-        let c = ConsoleClient::new("http://127.0.0.1:14000///").unwrap();
-        assert_eq!(c.base_url(), "http://127.0.0.1:14000");
+        let c = ConsoleClient::new("http://127.0.0.1:6135///").unwrap();
+        assert_eq!(c.base_url(), "http://127.0.0.1:6135");
     }
 }

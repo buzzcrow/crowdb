@@ -24,7 +24,7 @@ enum Command {
         seed: Vec<String>,
         #[arg(long)]
         data_root: PathBuf,
-        #[arg(long, default_value = "0.0.0.0:9095")]
+        #[arg(long, default_value_t = std::net::SocketAddr::from(([0, 0, 0, 0], crowdb_protocol::MONITOR_HTTP_BASE)))]
         bind: std::net::SocketAddr,
         #[arg(long, required = true)]
         interface: Vec<String>,

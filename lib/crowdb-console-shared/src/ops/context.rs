@@ -5,8 +5,8 @@
 
 use std::sync::{Arc, RwLock};
 
-use crowdb_kv_client::{
-    ClientConfig, CrowdbKvClient, CrowdbSysmdClient, GroupMembershipClient, ServiceDiscoveryClient,
+use crowdb_paxos_kv_client::{
+    ClientConfig, CrowdbSysmdClient, GroupMembershipClient, PaxosKvClient, ServiceDiscoveryClient,
 };
 
 use crate::config::{ConsoleConfig, NodeEntry, ServerEntry};
@@ -17,7 +17,7 @@ use crate::error::{Error, Result};
 /// Holds:
 /// - **`sysmd`** — a [`CrowdbSysmdClient`] for group-0 system metadata
 ///   (hardware hierarchy, KV-cluster topology, service registry).
-/// - **`kv`** — a [`CrowdbKvClient`] for the KV data-plane (put/get/
+/// - **`kv`** — a [`PaxosKvClient`] for the KV data-plane (put/get/
 ///   delete/scan on user stores/groups).
 /// - **`config`** — ephemeral [`ConsoleConfig`] inputs for bootstrap and
 ///   local benchmark deployment. Group 0 remains the topology authority.
@@ -26,11 +26,11 @@ use crate::error::{Error, Result};
 ///   the group-0 service registry. `None` when the caller (e.g. a unit
 ///   test) passes explicit addresses instead of using discovery.
 ///
-/// Both `sysmd` and `kv` wrap the same underlying `Arc<CrowdbKvClient>`
+/// Both `sysmd` and `kv` wrap the same underlying `Arc<PaxosKvClient>`
 /// so the topology cache and connection pool are shared.
 pub struct OpContext {
     sysmd: CrowdbSysmdClient,
-    kv: Arc<CrowdbKvClient>,
+    kv: Arc<PaxosKvClient>,
     config: RwLock<ConsoleConfig>,
     discovery: Option<Arc<ServiceDiscoveryClient>>,
     test_scenario: bool,
@@ -40,7 +40,7 @@ impl std::fmt::Debug for OpContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OpContext")
             .field("sysmd", &"CrowdbSysmdClient")
-            .field("kv", &"Arc<CrowdbKvClient>")
+            .field("kv", &"Arc<PaxosKvClient>")
             .field("config", &self.config)
             .field("discovery", &self.discovery.is_some())
             .field("test_scenario", &self.test_scenario)
@@ -50,7 +50,7 @@ impl std::fmt::Debug for OpContext {
 
 impl OpContext {
     /// Build an `OpContext` from a group-0 endpoint (e.g.
-    /// `127.0.0.1:10100`) and an initial [`ConsoleConfig`].
+    /// `127.0.0.1:11135`) and an initial [`ConsoleConfig`].
     ///
     /// The `group0_endpoint` is used to seed the topology cache for
     /// group 0 (store 0, group 0). The mgmt URLs of all group-0 hosting
@@ -78,7 +78,7 @@ impl OpContext {
         if !seeds.iter().any(|s| s == &group0_endpoint) {
             seeds.push(group0_endpoint.clone());
         }
-        let kv = CrowdbKvClient::new(ClientConfig::new(seeds));
+        let kv = PaxosKvClient::new(ClientConfig::new(seeds));
         kv.seed_leader(0, 0, group0_endpoint);
         let shared = Arc::new(kv);
         let sysmd = CrowdbSysmdClient::from_shared(Arc::clone(&shared));
@@ -94,7 +94,7 @@ impl OpContext {
         }
     }
 
-    /// Build an `OpContext` from a pre-built shared [`CrowdbKvClient`].
+    /// Build an `OpContext` from a pre-built shared [`PaxosKvClient`].
     ///
     /// Used by the web backend (`AppState::op_context`) to share the
     /// cached client (topology cache + connection pool) across requests
@@ -104,7 +104,7 @@ impl OpContext {
     /// client's config — accepted for API symmetry with [`Self::new`]).
     #[must_use]
     pub fn with_shared_client(
-        kv: Arc<CrowdbKvClient>,
+        kv: Arc<PaxosKvClient>,
         group0_endpoint: String,
         mgmt_seeds: &[String],
         config: ConsoleConfig,
@@ -124,7 +124,7 @@ impl OpContext {
         }
     }
 
-    /// Build an `OpContext` from a pre-built shared [`CrowdbKvClient`]
+    /// Build an `OpContext` from a pre-built shared [`PaxosKvClient`]
     /// without overwriting the existing group-0 leader hint.
     ///
     /// Like [`Self::with_shared_client`] but does NOT call
@@ -136,7 +136,7 @@ impl OpContext {
     /// new nodes.
     #[must_use]
     pub fn with_shared_client_preserving_hint(
-        kv: Arc<CrowdbKvClient>,
+        kv: Arc<PaxosKvClient>,
         mgmt_seeds: &[String],
         config: ConsoleConfig,
     ) -> Self {
@@ -167,9 +167,9 @@ impl OpContext {
         self.test_scenario
     }
 
-    /// Access the [`CrowdbKvClient`] for the KV data-plane.
+    /// Access the [`PaxosKvClient`] for the KV data-plane.
     #[must_use]
-    pub fn kv(&self) -> &CrowdbKvClient {
+    pub fn kv(&self) -> &PaxosKvClient {
         &self.kv
     }
 
@@ -186,11 +186,11 @@ impl OpContext {
         self.kv.seed_leader(0, 0, endpoint);
     }
 
-    /// Access the shared [`Arc<CrowdbKvClient>`] for the KV data-plane.
+    /// Access the shared [`Arc<PaxosKvClient>`] for the KV data-plane.
     /// Used by the web backend to verify the client is shared (not
     /// duplicated) between `AppState` and `OpContext`.
     #[must_use]
-    pub fn kv_arc(&self) -> &Arc<CrowdbKvClient> {
+    pub fn kv_arc(&self) -> &Arc<PaxosKvClient> {
         &self.kv
     }
 
@@ -240,8 +240,8 @@ impl OpContext {
     }
 
     /// Resolve the HTTP management URL for a node's deployed
-    /// `crowdb-kv-server`. This is the `ServerEntry.url` field (e.g.
-    /// `http://127.0.0.1:10000`).
+    /// `crowdb-paxos-kv-server`. This is the `ServerEntry.url` field (e.g.
+    /// `http://127.0.0.1:10135`).
     ///
     /// # Errors
     /// Returns [`Error::NotFound`] if no server is deployed on the node.

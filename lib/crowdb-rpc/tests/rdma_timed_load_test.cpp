@@ -72,6 +72,7 @@ OutFrame *test_echo(RpcServer &server, Frame *frame)
 void test_timed_server(const char *address, int port, const TestLoadSettings &settings)
 {
     RpcServer server(nullptr, 1, settings.io_workers);
+    ASSERT_TRUE(server.configure_rdma(RdmaConfig{}, true, false, true));
     ASSERT_TRUE(server.listen(address, port));
     std::atomic<uint64_t> received{0};
     std::atomic<uint64_t> expected{0};
@@ -131,9 +132,10 @@ void test_report_load(const TestLoadSettings &settings, TestRdmaLoad &load)
 void test_timed_client(const char *address, int port, const TestLoadSettings &settings)
 {
     SocketTransport transport(1, settings.io_workers);
-    TestRdmaLoad    load(settings.producer_count, settings.in_flight_per_producer, settings.duration_seconds);
-    RpcClient       client;
-    TestLoadStop    stop{transport};
+    ASSERT_TRUE(transport.configure_rdma(RdmaConfig{}, true, false, false));
+    TestRdmaLoad load(settings.producer_count, settings.in_flight_per_producer, settings.duration_seconds);
+    RpcClient    client;
+    TestLoadStop stop{transport};
     client.set_completion_pool_size(load.id_stride * 4);
     transport.start();
     std::vector<std::shared_ptr<Connection>> connections;

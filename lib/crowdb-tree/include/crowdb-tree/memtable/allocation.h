@@ -9,7 +9,11 @@ namespace crowdb::tree
 {
 // Allocation accounting follows ownership, including descriptors and payloads
 // awaiting epoch collection. Logical mutation events are aggregated per batch.
-using AllocationCounter = std::atomic<size_t>;
+struct AllocationCounter : std::atomic<size_t>
+{
+    using std::atomic<size_t>::atomic;
+    using std::atomic<size_t>::operator=;
+};
 
 class AllocationCharge
 {

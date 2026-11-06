@@ -8,8 +8,8 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use crowdb_kv_client::{
-    CrowdbKvClient, StreamProcessAuthority, StreamProcessContext, StreamProcessLeaseClient,
+use crowdb_paxos_kv_client::{
+    PaxosKvClient, StreamProcessAuthority, StreamProcessContext, StreamProcessLeaseClient,
     StreamProcessLeaseError, StreamProcessLeaseTiming,
 };
 use crowdb_protocol::{
@@ -54,7 +54,7 @@ impl ProcessLeaseSession {
     /// # Errors
     /// Returns invalid policy, a changed predecessor or an unavailable lease.
     pub async fn start(
-        kv: Arc<CrowdbKvClient>,
+        kv: Arc<PaxosKvClient>,
         instance_id: u64,
         policy: &DomainMonitorDescriptor,
     ) -> Result<Self, StreamProcessLeaseError> {

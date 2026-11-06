@@ -11,7 +11,7 @@ use axum::routing::{get, post};
 use axum::Router;
 use crowdb_console_shared::ops::{kv_logical, OpContext};
 use crowdb_console_shared::ConsoleConfig;
-use crowdb_kv_client::{GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{GetOutcome, ReadMode};
 use crowdb_protocol::common::{KvServerIdentity, ReplicaValue};
 use crowdb_protocol::key::{KvGroupKey, KvReplicaKey, TextKey};
 

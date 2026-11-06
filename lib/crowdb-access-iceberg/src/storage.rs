@@ -15,7 +15,7 @@ use crowdb_chunk_kv_client::{
     Group0ChunkKvRangeCatalogSource,
 };
 use crowdb_common::ec::EcScheme;
-use crowdb_kv_client::{ClientConfig as KvConfig, CrowdbKvClient};
+use crowdb_paxos_kv_client::{ClientConfig as KvConfig, PaxosKvClient};
 use crowdb_protocol::chunkdb::rpc::{ChunkType, Location};
 use crowdb_protocol::frame::MAX_FRAME_V2_PAYLOAD_BYTES;
 
@@ -259,7 +259,7 @@ pub async fn connect_with_chunk_kv_config(
     chunk_kv_rpc: &ChunkKvRpcTransportConfig,
 ) -> Result<(Arc<CatalogRepository>, Arc<RoutedCatalogStore>, ChunkIoClient), IcebergStorageError> {
     small_write.chunk_type = ChunkType::IcebergTable;
-    let control = Arc::new(CrowdbKvClient::new(KvConfig::new(seeds.clone())));
+    let control = Arc::new(PaxosKvClient::new(KvConfig::new(seeds.clone())));
     let client_config = ClientConfig::default();
     let source = Arc::new(Group0ChunkKvRangeCatalogSource::from_shared(Arc::clone(&control)));
     let transport = Arc::new(ChunkKvRpcTransport::with_config(

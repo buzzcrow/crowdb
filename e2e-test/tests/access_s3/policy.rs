@@ -10,8 +10,8 @@ use crowdb_chunk_client::{
     ChunkIoClient, ChunkIoWriter, ChunkReadPolicy, LargeWritePolicy, SmallWritePolicy,
 };
 use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbRpcTransport};
-use crowdb_kv_client::{
-    ChunkSlotMapClient, ClientConfig, CrowdbKvClient, GetOutcome, ReadMode, ServiceRegistryClient,
+use crowdb_paxos_kv_client::{
+    ChunkSlotMapClient, ClientConfig, GetOutcome, PaxosKvClient, ReadMode, ServiceRegistryClient,
 };
 use crowdb_protocol::chunk_slot::ChunkSlot;
 use crowdb_protocol::chunkdb::rpc::{ChunkType, Location, QueryChunkRequest, Strip};
@@ -78,7 +78,7 @@ async fn assert_chunk_layouts(
     s3_large: Location,
     iceberg_large: Location,
 ) {
-    let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(seeds)));
+    let kv = Arc::new(PaxosKvClient::new(ClientConfig::new(seeds)));
     let maps = ChunkSlotMapClient::new(Arc::clone(&kv));
     let storage = maps.read_storage().await.unwrap();
     assert_eq!(storage.bindings().len(), 3);
@@ -130,7 +130,7 @@ async fn assert_chunk_layouts(
 }
 
 async fn assert_system_chunk_purposes(
-    kv: &CrowdbKvClient,
+    kv: &PaxosKvClient,
     storage: &crowdb_protocol::chunk_slot::ChunkSlotMap<crowdb_protocol::chunk_slot::ChunkStorageGroup>,
 ) {
     let mut purposes = std::collections::HashSet::new();

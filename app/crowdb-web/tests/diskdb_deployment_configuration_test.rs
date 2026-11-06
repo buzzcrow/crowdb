@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use tower::ServiceExt;
 
 #[test]
-fn explicit_diskdb_ranges_keep_adjacent_host_instances_disjoint_and_preserve_legacy_inputs() {
+fn explicit_diskdb_ranges_keep_adjacent_host_instances_disjoint() {
     use crowdb_console_shared::config::NodeEntry;
     use crowdb_web::diskdb::{configuration_for_tests, DeployDiskdbBody};
     let node: NodeEntry = serde_json::from_value(json!({
@@ -20,17 +20,16 @@ fn explicit_diskdb_ranges_keep_adjacent_host_instances_disjoint_and_preserve_leg
     let mut used = std::collections::BTreeSet::new();
     for offset in 0..3 {
         let body: DeployDiskdbBody = serde_json::from_value(json!({
-            "listen_port":11000+offset,"http_port":11100+offset,
-            "rpc_port":11200+offset,"rpc_listen_port":11200+offset
+            "http_port":crowdb_protocol::DISKDB_HTTP_BASE+offset,
+            "rpc_port":crowdb_protocol::DISKDB_RPC_BASE+offset
         }))
         .unwrap();
         let config = configuration_for_tests(&node, &["http://127.0.0.1:10000".into()], &body)
             .unwrap_or_else(|(_, body)| panic!("{}", body.error));
         let config: toml::Value = toml::from_str(&config).unwrap();
         for (field, base) in [
-            ("listen_addr", 11000),
-            ("http_listen_addr", 11100),
-            ("rpc_listen_addr", 11200),
+            ("http_listen_addr", crowdb_protocol::DISKDB_HTTP_BASE),
+            ("rpc_listen_addr", crowdb_protocol::DISKDB_RPC_BASE),
         ] {
             let address = config["server"][field].as_str().unwrap();
             assert_eq!(address, format!("127.0.0.1:{}", base + offset));
@@ -43,7 +42,7 @@ fn explicit_diskdb_ranges_keep_adjacent_host_instances_disjoint_and_preserve_leg
     let config: toml::Value = toml::from_str(&config).unwrap();
     assert_eq!(
         config["server"]["rpc_listen_addr"].as_str(),
-        Some("127.0.0.1:7102")
+        Some("127.0.0.1:7100")
     );
 }
 

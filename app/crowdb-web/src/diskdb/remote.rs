@@ -15,7 +15,7 @@ pub(super) async fn deploy(
     node_id: u64,
     body: &DeployDiskdbBody,
 ) -> Result<(StatusCode, Json<DiskdbDeployResult>), crate::services::Failure> {
-    let (_, _, rpc) = super::lifecycle::validate_diskdb_ports(body)?;
+    let (_, rpc) = super::lifecycle::validate_diskdb_ports(body)?;
     let binding = crate::node::cluster_binding(state)?.ok_or_else(|| err_409("Node is unbound"))?;
     let mut node = state
         .config
@@ -65,9 +65,9 @@ pub fn configuration(
     seeds: &[String],
     body: &DeployDiskdbBody,
 ) -> Result<String, crate::services::Failure> {
-    let (listen, http, rpc) = super::lifecycle::validate_diskdb_ports(body)?;
-    let mut configuration = format!("[server]\nrpc_workers = 2\nlisten_addr = {:?}\nhttp_listen_addr = {:?}\nrpc_listen_addr = {:?}\ninstance_id = {:?}\nkv_server_mgmt_seeds = {:?}\n",
-        format!("{}:{listen}", node.host), format!("{}:{http}", node.host), format!("{}:{rpc}", node.host), node.id.to_string(), seeds);
+    let (http, rpc) = super::lifecycle::validate_diskdb_ports(body)?;
+    let mut configuration = format!("[server]\nrpc_workers = 2\nhttp_listen_addr = {:?}\nrpc_listen_addr = {:?}\ninstance_id = {:?}\nkv_server_mgmt_seeds = {:?}\n",
+        format!("{}:{http}", node.host), format!("{}:{rpc}", node.host), node.id.to_string(), seeds);
     if let Some(interval) = body.keepalive_interval_secs {
         writeln!(configuration, "\n[heartbeat]\ninterval_secs = {interval}")
             .expect("writing configuration to a String cannot fail");

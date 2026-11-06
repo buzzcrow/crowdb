@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! HTTP client for `crowdb-kv-server`'s management API.
+//! HTTP client for `crowdb-paxos-kv-server`'s management API.
 //!
 //! Endpoints used in C1: `/health`, `/topology`. Other endpoints are
 //! exposed as additional methods so later phases (`store add`, etc.) can
@@ -12,8 +12,8 @@ use std::time::Duration;
 use crate::error::{Error, Result};
 use crate::snapshot::{HealthInfo, MetricsResponse, StoreView, TopologyResponse, WipeResult};
 
-/// Thin wrapper around a `reqwest::Client` bound to one `crowdb-kv-server`
-/// management base URL (e.g. `http://127.0.0.1:10000`).
+/// Thin wrapper around a `reqwest::Client` bound to one `crowdb-paxos-kv-server`
+/// management base URL (e.g. `http://127.0.0.1:10135`).
 #[derive(Debug, Clone)]
 pub struct ServerClient {
     base_url: String,

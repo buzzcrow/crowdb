@@ -3,13 +3,13 @@
 
 use super::cluster::{leader, topology};
 use crate::common::management::{addresses, client, origin, request};
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, GetOutcome, KvRpcTransport, ReadMode};
+use crowdb_paxos_kv_client::{ClientConfig, GetOutcome, PaxosKvClient, PaxosKvRpcTransport, ReadMode};
 use reqwest::{Client, Method};
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 
-fn kv(ips: &[String]) -> CrowdbKvClient {
-    CrowdbKvClient::new(ClientConfig::new(ips.iter().map(|ip| origin(ip)).collect()))
+fn kv(ips: &[String]) -> PaxosKvClient {
+    PaxosKvClient::new(ClientConfig::new(ips.iter().map(|ip| origin(ip)).collect()))
 }
 
 pub(super) async fn wire_initial(http: &Client, ips: &[String]) {
@@ -52,14 +52,14 @@ async fn applied(http: &Client, ip: &str) -> u64 {
 }
 
 async fn imported_value(ip: &str, required: u64) {
-    let response = KvRpcTransport::new()
+    let response = PaxosKvRpcTransport::new()
         .send_get(
             &format!("http://{ip}:7001"),
             b"k1",
             9201,
             9201,
             1,
-            crowdb_kv::rpc::ReadMode::MinSlot,
+            crowdb_paxos_kv::rpc::ReadMode::MinSlot,
             required,
         )
         .await
@@ -174,7 +174,7 @@ async fn shrink(http: &Client, ips: &[String], mut epoch: u64) {
     }
 }
 
-async fn exact(kv: &CrowdbKvClient, store: u64, key: &[u8], value: &[u8]) {
+async fn exact(kv: &PaxosKvClient, store: u64, key: &[u8], value: &[u8]) {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         match kv.get(store, 1, key, ReadMode::Linearizable, None).await.unwrap() {

@@ -9,7 +9,7 @@ use crowdb_chunkdb::{
     selector::{MirrorPlacement, PlacementConstraints},
     topology::build_snapshot,
 };
-use crowdb_kv_client::ServiceRegistryClient;
+use crowdb_paxos_kv_client::ServiceRegistryClient;
 use crowdb_protocol::{
     common::{HwStatus, InstanceValue},
     key::InstanceKey,
@@ -35,7 +35,7 @@ async fn expired_physical_io_is_excluded_without_changing_hardware_and_returns_a
             .as_millis(),
     )
     .unwrap()
-        + crowdb_kv_client::SERVICE_INSTANCE_TTL_MS
+        + crowdb_paxos_kv_client::SERVICE_INSTANCE_TTL_MS
         + 1;
     assert!(before.healthy_disk_groups_at_for_tests(expired).is_empty());
     let stopped = &groups[0];
@@ -50,12 +50,12 @@ async fn expired_physical_io_is_excluded_without_changing_hardware_and_returns_a
             0,
             0,
             key.as_bytes(),
-            crowdb_kv_client::ReadMode::Linearizable,
+            crowdb_paxos_kv_client::ReadMode::Linearizable,
             None,
         )
         .await
         .unwrap();
-    let crowdb_kv_client::GetOutcome::Found { value, .. } = value else {
+    let crowdb_paxos_kv_client::GetOutcome::Found { value, .. } = value else {
         panic!("missing IO registration")
     };
     let mut observation: InstanceValue = serde_json::from_slice(&value).unwrap();

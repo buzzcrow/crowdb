@@ -148,6 +148,21 @@ bool RpcChunkTransport::valid() const
 Status RpcChunkTransport::write_mirror(ChunkId chunk_id, uint32_t mirror_index, uint64_t offset, const uint8_t *data,
                                        size_t length)
 {
+    return write_mirror_impl(chunk_id, mirror_index, offset, data, length, nullptr);
+}
+
+Status RpcChunkTransport::write_fixed_mirror(ChunkId chunk_id, uint32_t mirror_index, uint64_t offset,
+                                             const uint8_t *data, size_t length, ChunkIoContext context)
+{
+    if (context.created_ms == 0) {
+        return Status::invalid_argument();
+    }
+    return write_mirror_impl(chunk_id, mirror_index, offset, data, length, &context);
+}
+
+Status RpcChunkTransport::write_mirror_impl(ChunkId chunk_id, uint32_t mirror_index, uint64_t offset,
+                                            const uint8_t *data, size_t length, const ChunkIoContext *context)
+{
     if ((data == nullptr && length != 0)) {
         return Status::invalid_argument("tree chunk RPC mirror write arguments are invalid");
     }
@@ -186,7 +201,8 @@ Status RpcChunkTransport::write_mirror(ChunkId chunk_id, uint32_t mirror_index, 
         flatbuffers::FlatBufferBuilder builder;
         auto                           request = crowdb::diskio::proto::CreateFBDiskWriteRequest(
             builder, request_id, monotonic_nanos(), &disk_id, segment.zone_index, zone_offset,
-            static_cast<uint32_t>(part), segment_base, wall_time_ms());
+            static_cast<uint32_t>(part), segment_base, context != nullptr ? context->created_ms : wall_time_ms(),
+            context != nullptr);
         builder.Finish(request);
         std::vector<uint8_t> control(builder.GetBufferPointer(), builder.GetBufferPointer() + builder.GetSize());
         RpcResult            result;
@@ -200,6 +216,9 @@ Status RpcChunkTransport::write_mirror(ChunkId chunk_id, uint32_t mirror_index, 
             return Status::corruption("DiskIO write response is malformed");
         }
         status = diskio_status(response->ret_code());
+        if (status.ok() && context != nullptr && !response->sync_completed()) {
+            return Status::not_supported("fixed pack write requires synchronized completion");
+        }
         if (!status.ok()) {
             return status;
         }
@@ -276,6 +295,21 @@ Status RpcChunkTransport::advance_write(ChunkId chunk_id, uint64_t expected_byte
 Status RpcChunkTransport::read_mirror(ChunkId chunk_id, uint32_t mirror_index, uint64_t offset, uint8_t *data,
                                       size_t length) const
 {
+    return read_mirror_impl(chunk_id, mirror_index, offset, data, length, nullptr);
+}
+
+Status RpcChunkTransport::read_fixed_mirror(ChunkId chunk_id, uint32_t mirror_index, uint64_t offset, uint8_t *data,
+                                            size_t length, ChunkIoContext context) const
+{
+    if (context.created_ms == 0) {
+        return Status::invalid_argument();
+    }
+    return read_mirror_impl(chunk_id, mirror_index, offset, data, length, &context);
+}
+
+Status RpcChunkTransport::read_mirror_impl(ChunkId chunk_id, uint32_t mirror_index, uint64_t offset, uint8_t *data,
+                                           size_t length, const ChunkIoContext *context) const
+{
     if ((data == nullptr && length != 0)) {
         return Status::invalid_argument("tree chunk RPC mirror read arguments are invalid");
     }
@@ -315,9 +349,9 @@ Status RpcChunkTransport::read_mirror(ChunkId chunk_id, uint32_t mirror_index, u
         const uint64_t request_id  = impl_->next_request_id();
         const FBInt128 disk_id(segment.disk_high, segment.disk_low);
         flatbuffers::FlatBufferBuilder builder;
-        auto request = crowdb::diskio::proto::CreateFBDiskReadRequest(builder, request_id, monotonic_nanos(), &disk_id,
-                                                                      segment.zone_index, zone_offset,
-                                                                      static_cast<uint32_t>(part), 0);
+        auto                           request = crowdb::diskio::proto::CreateFBDiskReadRequest(
+            builder, request_id, monotonic_nanos(), &disk_id, segment.zone_index, zone_offset,
+            static_cast<uint32_t>(part), 0, context != nullptr ? context->created_ms : 0, false);
         builder.Finish(request);
         std::vector<uint8_t> control(builder.GetBufferPointer(), builder.GetBufferPointer() + builder.GetSize());
         RpcResult            result;
@@ -331,6 +365,9 @@ Status RpcChunkTransport::read_mirror(ChunkId chunk_id, uint32_t mirror_index, u
             return Status::corruption("DiskIO read response is malformed");
         }
         status = diskio_status(response->ret_code());
+        if (status.ok() && context != nullptr && !response->request_age_checked()) {
+            return Status::not_supported("fixed pack read requires request-age fencing");
+        }
         if (!status.ok()) {
             return status;
         }

@@ -6,7 +6,7 @@
 use std::net::SocketAddr;
 
 use crowdb_common::config::BaseConfig;
-use crowdb_protocol::{CHUNKDB_HTTP_BASE, CHUNKDB_RPC_BASE, KV_SERVER_MGMT_BASE};
+use crowdb_protocol::{CHUNKDB_HTTP_BASE, CHUNKDB_RPC_BASE, PAXOS_KV_SERVER_MGMT_BASE};
 use serde::{Deserialize, Serialize};
 
 use crate::selector::FailureDomainPriority;
@@ -459,7 +459,7 @@ impl Default for ServerConfig {
             http_listen_addr: format!("0.0.0.0:{CHUNKDB_HTTP_BASE}"),
             rpc_listen_addr: default_rpc_listen_addr(),
             instance_id: None,
-            kv_server_mgmt_seeds: vec![format!("http://127.0.0.1:{KV_SERVER_MGMT_BASE}")],
+            kv_server_mgmt_seeds: vec![format!("http://127.0.0.1:{PAXOS_KV_SERVER_MGMT_BASE}")],
             kv_pool_size: default_client_pool_size(),
             kv_rpc_workers: default_client_rpc_workers(),
             diskdb_pool_size: default_client_pool_size(),

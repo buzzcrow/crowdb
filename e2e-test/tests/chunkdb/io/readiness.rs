@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use crowdb_diskio_client::{DiskioClient, DiskioClientConfig};
-use crowdb_kv_client::{HardwareClient, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{HardwareClient, ServiceRegistryClient};
 use crowdb_protocol::common::InstanceValue;
 
 fn current_owners(instances: &[(u64, InstanceValue)], started_at_ms: u64) -> bool {

@@ -6,8 +6,9 @@
 // A page is a fixed-size byte frame whose in-memory layout IS its on-disk
 // layout: no encode/decode. The B+tree reads, binary-searches, and compares
 // keys directly on the frame bytes via the non-owning views below; Slices point
-// into the frame (zero copy). Builders construct a frame from already key-sorted
-// input (the flush/consolidate/split output) and stamp a CRC32C trailer.
+// into the frame (zero copy). Builders construct a frame from already
+// key-sorted input (the flush/consolidate/split output) and stamp a CRC32C
+// trailer.
 //
 // Layout (leaf):
 //   [FrameHeader 64B][Slot[slot_count] (sorted, grows fwd)] ... free ...
@@ -25,6 +26,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <span>
 #include <vector>
 
 namespace crowdb::tree
@@ -42,46 +44,48 @@ inline constexpr size_t kFrameHeaderSize  = 128;
 inline constexpr size_t kFrameTrailerSize = 8;  // logical_len u32 + crc32c u32
 inline constexpr size_t kLeafSlotSize     = 12; // rec_off, key_len, cell_len (u32)
 inline constexpr size_t kInnerSlotSize    = 8;  // rec_off, key_len (u32)
+// Safety bound, independent of the ordinary split target or transport frames.
+inline constexpr size_t kMaxPhysicalPageBytes = 32 * 1024 * 1024;
 
 struct PageSummary
 {
-    uint64_t live_kv = 0;
-    uint64_t live_key_bytes = 0;
-    uint64_t live_value_bytes = 0;
-    uint64_t live_logical_bytes = 0;
-    uint64_t reachable_leaf_pages = 0;
-    uint64_t reachable_inner_pages = 0;
-    uint64_t reachable_overflow_pages = 0;
+    uint64_t live_kv                       = 0;
+    uint64_t live_key_bytes                = 0;
+    uint64_t live_value_bytes              = 0;
+    uint64_t live_logical_bytes            = 0;
+    uint64_t reachable_leaf_pages          = 0;
+    uint64_t reachable_inner_pages         = 0;
+    uint64_t reachable_overflow_pages      = 0;
     uint64_t reachable_page_capacity_bytes = 0;
-    bool exact = false;
+    bool     exact                         = false;
 };
 
 // Header field byte offsets within a frame.
 namespace fh
 {
-inline constexpr size_t kMagic         = 0;  // u32
-inline constexpr size_t kType          = 4;  // u8 (page_type)
-inline constexpr size_t kFormatVersion = 5;  // u8
-inline constexpr size_t kFlags         = 6;  // u8 (reserved; compression is on stored bytes)
-inline constexpr size_t kSlotCount     = 8;  // u32 (leaf: entries; inner: separators)
-inline constexpr size_t kFreeLo        = 12; // u32 (end of main slot dir)
-inline constexpr size_t kFreeHi        = 16; // u32 (lowest used record offset)
-inline constexpr size_t kDeltaCount    = 20; // u32 (leaf: in-frame delta count, PT12)
-inline constexpr size_t kSelfpage_id   = 24; // u64
-inline constexpr size_t kRightSibling  = 32; // u64 (leaf only)
-inline constexpr size_t kLowerFenceOff = 40; // u32
-inline constexpr size_t kLowerFenceLen = 44; // u32
-inline constexpr size_t kUpperFenceOff = 48; // u32
-inline constexpr size_t kUpperFenceLen = 52; // u32
-inline constexpr size_t kSummaryLiveKv = 64;
-inline constexpr size_t kSummaryLiveKeyBytes = 72;
-inline constexpr size_t kSummaryLiveValueBytes = 80;
-inline constexpr size_t kSummaryLiveLogicalBytes = 88;
-inline constexpr size_t kSummaryLeafPages = 96;
-inline constexpr size_t kSummaryInnerPages = 104;
-inline constexpr size_t kSummaryOverflowPages = 112;
+inline constexpr size_t kMagic                    = 0;  // u32
+inline constexpr size_t kType                     = 4;  // u8 (page_type)
+inline constexpr size_t kFormatVersion            = 5;  // u8
+inline constexpr size_t kFlags                    = 6;  // u8 (reserved; compression is on stored bytes)
+inline constexpr size_t kSlotCount                = 8;  // u32 (leaf: entries; inner: separators)
+inline constexpr size_t kFreeLo                   = 12; // u32 (end of main slot dir)
+inline constexpr size_t kFreeHi                   = 16; // u32 (lowest used record offset)
+inline constexpr size_t kDeltaCount               = 20; // u32 (leaf: in-frame delta count, PT12)
+inline constexpr size_t kSelfpage_id              = 24; // u64
+inline constexpr size_t kRightSibling             = 32; // u64 (leaf only)
+inline constexpr size_t kLowerFenceOff            = 40; // u32
+inline constexpr size_t kLowerFenceLen            = 44; // u32
+inline constexpr size_t kUpperFenceOff            = 48; // u32
+inline constexpr size_t kUpperFenceLen            = 52; // u32
+inline constexpr size_t kSummaryLiveKv            = 64;
+inline constexpr size_t kSummaryLiveKeyBytes      = 72;
+inline constexpr size_t kSummaryLiveValueBytes    = 80;
+inline constexpr size_t kSummaryLiveLogicalBytes  = 88;
+inline constexpr size_t kSummaryLeafPages         = 96;
+inline constexpr size_t kSummaryInnerPages        = 104;
+inline constexpr size_t kSummaryOverflowPages     = 112;
 inline constexpr size_t kSummaryPageCapacityBytes = 120;
-inline constexpr size_t kSummaryFlags = 127;
+inline constexpr size_t kSummaryFlags             = 127;
 } // namespace fh
 
 // ── little-endian frame accessors ─────────────────────────────────
@@ -149,18 +153,18 @@ void frame_restamp_crc(uint8_t *f, uint32_t page_bytes);
 // record space. Inner frames instead persist the page IDs of the leftmost and
 // rightmost reachable leaves, whose own fences hold the exact boundary keys.
 // Empty subtrees carry neither representation.
-[[nodiscard]] bool     frame_set_fences(uint8_t *f, uint32_t page_bytes, const Slice *lower, const Slice *upper);
-[[nodiscard]] bool     frame_has_lower_fence(const uint8_t *f);
-[[nodiscard]] bool     frame_has_upper_fence(const uint8_t *f);
-[[nodiscard]] Slice    frame_lower_fence(const uint8_t *f);
-[[nodiscard]] Slice    frame_upper_fence(const uint8_t *f);
-[[nodiscard]] bool     frame_fences_are_page_ids(const uint8_t *f);
-[[nodiscard]] uint64_t frame_lower_fence_page_id(const uint8_t *f);
-[[nodiscard]] uint64_t frame_upper_fence_page_id(const uint8_t *f);
-void                   frame_set_inner_fence_pages(uint8_t *f, uint32_t page_bytes, uint64_t lower_leaf_page_id,
-                                                   uint64_t upper_leaf_page_id);
+[[nodiscard]] bool        frame_set_fences(uint8_t *f, uint32_t page_bytes, const Slice *lower, const Slice *upper);
+[[nodiscard]] bool        frame_has_lower_fence(const uint8_t *f);
+[[nodiscard]] bool        frame_has_upper_fence(const uint8_t *f);
+[[nodiscard]] Slice       frame_lower_fence(const uint8_t *f);
+[[nodiscard]] Slice       frame_upper_fence(const uint8_t *f);
+[[nodiscard]] bool        frame_fences_are_page_ids(const uint8_t *f);
+[[nodiscard]] uint64_t    frame_lower_fence_page_id(const uint8_t *f);
+[[nodiscard]] uint64_t    frame_upper_fence_page_id(const uint8_t *f);
+void                      frame_set_inner_fence_pages(uint8_t *f, uint32_t page_bytes, uint64_t lower_leaf_page_id,
+                                                      uint64_t upper_leaf_page_id);
 [[nodiscard]] PageSummary frame_summary(const uint8_t *f);
-void frame_set_summary(uint8_t *f, uint32_t page_bytes, const PageSummary &summary);
+void                      frame_set_summary(uint8_t *f, uint32_t page_bytes, const PageSummary &summary);
 
 // ── Leaf view (zero-copy) ─────────────────────────────────────────
 class LeafFrameView
@@ -406,11 +410,15 @@ class LeafFrameBuilder
 bool inner_frame_build(uint8_t *f, uint32_t page_bytes, uint64_t self_page_id, const std::vector<uint64_t> &children,
                        const std::vector<Slice> &separators);
 
+bool inner_frame_build_span(uint8_t *f, uint32_t page_bytes, uint64_t self_page_id, std::span<const uint64_t> children,
+                            std::span<const Slice> separators);
+
 // ── Overflow frame (PT11): one chunk of a large value ─────────────
-// Layout: [FrameHeader 64B (chunk_len @ kSlotCount, next_page_id @ kRightSibling)]
+// Layout: [FrameHeader 64B (chunk_len @ kSlotCount, next_page_id @
+// kRightSibling)]
 //         [payload chunk] ... zero pad ... [Trailer 8B].
-// A large value of N bytes spans ceil(N / overflow_chunk_cap(page_bytes)) frames
-// linked by next_page_id (kInvalidPageId on the last).
+// A large value of N bytes spans ceil(N / overflow_chunk_cap(page_bytes))
+// frames linked by next_page_id (kInvalidPageId on the last).
 [[nodiscard]] inline uint32_t overflow_chunk_cap(uint32_t page_bytes)
 {
     return page_bytes - static_cast<uint32_t>(kFrameHeaderSize) - static_cast<uint32_t>(kFrameTrailerSize);

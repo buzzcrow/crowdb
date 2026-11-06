@@ -205,13 +205,11 @@ impl LifecycleHandler {
 
         let constraints = self.allocation_constraints(strip_type, &snap);
         // Convert write_granularity (KB) to unit_count using the unit
-        // size from the topology snapshot. Fall back to treating KB as
-        // units if unit_size_bytes is unavailable (0).
+        // size from the topology snapshot, rounding up to cover the complete
+        // requested strip. Fall back to treating KB as units if the unit size
+        // is unavailable (0).
         let unit_size_kb = snap.unit_size_bytes() / 1024;
-        let unit_count = write_granularity_kb
-            .checked_div(unit_size_kb)
-            .unwrap_or(write_granularity_kb)
-            .max(1);
+        let unit_count = write_granularity_kb.div_ceil(unit_size_kb.max(1)).max(1);
 
         let mut strips = self
             .allocator

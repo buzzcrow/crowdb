@@ -53,6 +53,10 @@ table FBDiskReadRequest {
     zone_offset:uint64;
     size:uint32;
     test_pattern_offset:uint64;
+    // Fixed before admission; retries must not refresh this timestamp.
+    read_create_time_ms:uint64;
+    // Zero-data negotiation for independently reclaimable immutable packs.
+    fence_probe:bool = false;
 }
 
 // Read response. The data payload follows as raw bytes (data_size in the
@@ -61,6 +65,7 @@ table FBDiskReadResponse {
     id:uint64;
     rpc_create_nano:uint64;
     ret_code:FBDiskIoRetCode;
+    request_age_checked:bool = false;
 }
 
 table FBDiskFsyncRequest {

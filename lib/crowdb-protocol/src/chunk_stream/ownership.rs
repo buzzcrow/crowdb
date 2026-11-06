@@ -25,6 +25,9 @@ pub struct StreamProcessLease {
     pub prior_exclusion_deadline_ms: u64,
     pub grant_sequence: u64,
     pub grant_expires_at_ms: u64,
+    /// Monotone for this identity; prevents late renewal after GC exclusion.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub revoked: bool,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]

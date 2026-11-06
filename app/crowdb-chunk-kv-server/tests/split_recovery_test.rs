@@ -1,6 +1,8 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+#[path = "common/metadata.rs"]
+mod metadata;
 #[path = "common/process.rs"]
 mod test_process;
 
@@ -18,6 +20,44 @@ use crowdb_protocol::chunk_kv::{
     SplitChildAssignment, SplitPhase, SplitReadinessProof, SplitTransition, TailOverlayArtifact,
 };
 use std::sync::Arc;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recovered_split_records_tree_completion_without_a_live_transfer() {
+    use crowdb_chunk_kv_server::storage::open_root_catalog_with_process_for_tests;
+    use crowdb_tree_ffi::chunk::test_util::TestChunkBackend;
+
+    let metadata = metadata::TestMetadata::start().await;
+    let entry = entry(&transition(), false);
+    let partition = recovered(&entry).await;
+    assert!(transfer_initialization_pending(&partition).await);
+    let catalog = open_root_catalog_with_process_for_tests(
+        metadata.client.clone(),
+        0,
+        1,
+        &entry,
+        test_process::TestProcess::authority(1),
+    )
+    .await
+    .unwrap();
+    let backend = TestChunkBackend::new(entry.artifact.tree_id, entry.owner_epoch).unwrap();
+    let pages = backend.page_store(0).unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        catalog.complete_tree_recovery_for_tests(&partition, &pages),
+    )
+    .await
+    .expect("completed split replay must not wait for a transfer command")
+    .unwrap();
+    assert!(transfer_initialization_pending(&partition).await);
+    partition.close().await.unwrap();
+}
+
+async fn transfer_initialization_pending(partition: &Partition) -> bool {
+    use std::future::Future;
+    let mut completion = std::pin::pin!(partition.await_transfer_initialization());
+    std::future::poll_fn(|context| std::task::Poll::Ready(completion.as_mut().poll(context).is_pending()))
+        .await
+}
 
 #[tokio::test]
 async fn committed_split_proves_both_recovered_writers_and_rejects_mismatches() {

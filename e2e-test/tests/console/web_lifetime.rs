@@ -1,13 +1,14 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+use crowdb_protocol::port::ports::WEB_BASE;
 use reqwest::Client;
 use serde_json::{json, Value};
 
 async fn post(http: &Client, path: &str, body: Value) -> Value {
     let addresses = crate::common::management::addresses(1);
     let response = http
-        .post(format!("http://{}:9090{path}", addresses[0]))
+        .post(format!("http://{}:{WEB_BASE}{path}", addresses[0]))
         .json(&body)
         .send()
         .await

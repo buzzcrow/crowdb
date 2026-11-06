@@ -10,8 +10,8 @@ use crate::{
 use std::sync::Arc;
 
 pub(super) async fn wait_for_diskdb_registration(ctx: &OpContext, expected: usize) -> Result<()> {
-    let registry = crowdb_kv_client::ServiceRegistryClient::from_shared(Arc::clone(ctx.kv_arc()));
-    let hardware = crowdb_kv_client::HardwareClient::from_shared(Arc::clone(ctx.kv_arc()));
+    let registry = crowdb_paxos_kv_client::ServiceRegistryClient::from_shared(Arc::clone(ctx.kv_arc()));
+    let hardware = crowdb_paxos_kv_client::HardwareClient::from_shared(Arc::clone(ctx.kv_arc()));
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
         let instances = registry.read_all_diskdb_instances().await?;

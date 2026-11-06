@@ -31,7 +31,7 @@ class ConsoleCluster(ManagedCluster):
         env = os.environ.copy()
         bypass = ",".join(filter(None, [env.get("NO_PROXY", ""), env.get("no_proxy", ""), self.address]))
         env.update(NO_PROXY=bypass, no_proxy=bypass,
-                   CROWDB_WEB_E2E_BASE_URL=f"http://{self.address}:9090",
+                   CROWDB_WEB_E2E_BASE_URL=f"http://{self.address}:6135",
                    CROWDB_NATIVE_KV_PID=str(self.observation()["services"]["kv"]["pid"]),
                    CROWDB_E2E_CONTROL=str(self.artifacts / "control"),
                    CROWDB_WEB_E2E_OUTPUT=str(self.artifacts / "browser"),

@@ -17,10 +17,10 @@ pub use manager::PartitionManager;
 pub use metrics::{PartitionMetrics, PartitionMetricsSnapshot};
 pub use partition::{
     decode_frame, encode_frame, CheckpointReclaim, CrowdbPartitionTree, DecodedFrame, FrameDecode,
-    JournalFrontier, MaterializationProgress, MutationResponse, Partition, PartitionConfig, PartitionJournal,
-    PartitionSnapshot, PartitionTree, PreparedSplit, PreparedSplitWriter, ScanEntry, ScanPage,
-    SplitHandoffStore, SplitIngress, SplitWriterTarget, StreamPartitionJournal, TreeObservation,
-    MAX_FRAME_BYTES,
+    InstalledSplit, JournalFrontier, MaterializationProgress, MutationResponse, Partition, PartitionConfig,
+    PartitionJournal, PartitionSnapshot, PartitionTree, PreparedSplit, PreparedSplitOverlay,
+    PreparedSplitWriter, ScanEntry, ScanPage, SplitHandoffStore, SplitIngress, SplitOverlayLimits,
+    SplitWriterTarget, StreamPartitionJournal, TreeObservation, MAX_FRAME_BYTES,
 };
 pub use types::{
     canonical_operation_digest, Checkpoint, CompareCondition, JournalPosition, MutationOperation,

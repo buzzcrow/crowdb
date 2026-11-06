@@ -1,7 +1,7 @@
 use std::fs;
 use std::time::Duration;
 
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient, ServiceRegistryClient};
 use crowdb_protocol::chunk_kv::Id128;
 use serde::Deserialize;
 use thiserror::Error;
@@ -17,7 +17,7 @@ pub enum ChunkBootstrapError {
     #[error("chunk service configuration failed: {0}")]
     Io(#[from] std::io::Error),
     #[error("chunk service registry lookup failed: {0}")]
-    Registry(#[from] crowdb_kv_client::Error),
+    Registry(#[from] crowdb_paxos_kv_client::Error),
     #[error("chunk service configuration is invalid: {0}")]
     Invalid(&'static str),
 }
@@ -106,7 +106,7 @@ pub async fn verify_chunk_services(
     if expected.is_empty() {
         return Ok(());
     }
-    let registry = ServiceRegistryClient::new(CrowdbKvClient::new(ClientConfig::new(vec![
+    let registry = ServiceRegistryClient::new(PaxosKvClient::new(ClientConfig::new(vec![
         management_seed.to_owned()
     ])));
     registry.kv().refresh_topology().await?;

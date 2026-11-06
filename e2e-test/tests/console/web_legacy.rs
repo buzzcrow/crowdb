@@ -1,6 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+use crowdb_protocol::port::ports::WEB_BASE;
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
@@ -15,7 +16,7 @@ pub(super) async fn get(http: &Client, base: &str, path: &str) -> Value {
 
 pub(super) async fn bootstrap() -> (Client, String) {
     let addresses = crate::common::management::addresses(1);
-    let base = format!("http://{}:9090", addresses[0]);
+    let base = format!("http://{}:{WEB_BASE}", addresses[0]);
     let http = Client::builder().timeout(Duration::from_secs(5)).build().unwrap();
     assert_eq!(get(&http, &base, "/api/mode").await["mode"], "legacy");
     for (path, body, expected) in [

@@ -11,6 +11,8 @@ import socket
 import stat
 from pathlib import Path
 
+import ports
+
 from runtime import Runtime, node_policy_file
 from storage import inputs
 
@@ -20,13 +22,16 @@ def digest_reference(reference):
     return digest.startswith("sha256:") and len(digest) == 71 and all(c in "0123456789abcdef" for c in digest[7:])
 
 
-# Base listeners used by one node. Host-network instances add
-# ``CROWDB_PORT_OFFSET`` to every listener before the policy is sealed. These
-# values mirror the canonical service blocks in
-# ``lib/crowdb-protocol/src/port/ports.rs``.
-HOST_PORTS = (2222, 9090, 9095, 10000, 10100, 10101, 11000, 11100, 11200,
-              12000, 12100, 12200, 13000, 14000, 15100, 15200, 16000, 17000,
-              18000, 19000)
+# Default node-policy listeners. Explicitly configured service endpoints remain authoritative.
+HOST_PORTS = (ports.SSH_PORT, ports.PAXOS_KV_SERVER_MGMT_BASE,
+              ports.PAXOS_KV_SERVER_RPC_BASE, ports.PAXOS_KV_SERVER_RPC_BASE + 1,
+              ports.DISKDB_HTTP_BASE, ports.DISKDB_RPC_BASE,
+              ports.CHUNKDB_HTTP_BASE, ports.CHUNKDB_RPC_BASE,
+              ports.DISKIO_RPC_BASE, ports.WEB_BASE,
+              ports.CHUNK_KV_HTTP_BASE, ports.CHUNK_KV_RPC_BASE,
+              ports.ACCESS_SERVER_HTTP_BASE, ports.ACCESS_SERVER_ICEBERG_HTTP_BASE,
+              ports.ACCESS_SERVER_DATASET_HTTP_BASE, ports.ACCESS_SERVER_HEALTH_HTTP_BASE,
+              ports.MONITOR_HTTP_BASE)
 
 
 def check_host_ports(ports=HOST_PORTS):
@@ -96,7 +101,7 @@ def validate(args, parser, check_ports=True):
         parser.error("management interface and physical host identity are required")
     if args.network == "host":
         if args.ui_port is not None:
-            parser.error("host networking uses the node's port 9090 directly")
+            parser.error(f"host networking uses the node's port {ports.WEB_BASE} directly")
         try:
             socket.if_nametoindex(args.interface)
             if check_ports:

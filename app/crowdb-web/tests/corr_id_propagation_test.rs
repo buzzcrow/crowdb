@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! Verify `x-crowdb-kv-corr-id` propagates inbound → handler → response.
+//! Verify `x-crowdb-paxos-kv-corr-id` propagates inbound → handler → response.
 //!
 //! Each test spins up the real `crowdb-web` router. The middleware
 //! should:

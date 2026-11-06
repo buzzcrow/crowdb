@@ -3,6 +3,7 @@
 
 // CT14: randomized parity against a std::map oracle (in-order + out-of-order),
 // exercising flush / consolidate / split / merge.
+#include "btree/tree_core_access.h"
 #include "crowdb-tree/crowdb-tree.h"
 
 #include <gtest/gtest.h>
@@ -120,6 +121,7 @@ TEST(Parity, InOrderRandomOpsWithPeriodicCompare)
 TEST(Parity, OutOfOrderConvergesToHighestSlot)
 {
     Crowdbtree t(small_tree());
+    const auto account = TreeCoreAccess::get(t)->binding()->account();
 
     struct Op
     {
@@ -155,15 +157,38 @@ TEST(Parity, OutOfOrderConvergesToHighestSlot)
         }
     }
 
-    // apply in shuffled order; contiguous stays 0 (nothing flushes), so all live
-    // in L0 with highest-slot-wins. scan must already match the oracle.
-    std::vector<Op> shuffled = ops;
-    std::shuffle(shuffled.begin(), shuffled.end(), rng); // NOLINT(cert-msc50-cpp)
-    for (const auto &op : shuffled) {
-        Batch b{{{.key = op.key, .kind = op.del ? OpKind::kDelete : OpKind::kPut, .value = op.value}}};
-        ASSERT_TRUE(t.apply(op.slot, b).ok());
+    // Keep every operation while bounding the outstanding out-of-order prefix.
+    // The admission contract reserves 64 gap entries. Each shuffled window
+    // resolves highest slots before and after handoff without exceeding it.
+    constexpr size_t                   window = 64;
+    std::map<std::string, std::string> expected;
+    for (size_t begin = 0; begin < ops.size(); begin += window) {
+        const auto      end = std::min(begin + window, ops.size());
+        std::vector<Op> shuffled(ops.begin() + static_cast<ptrdiff_t>(begin),
+                                 ops.begin() + static_cast<ptrdiff_t>(end));
+        std::shuffle(shuffled.begin(), shuffled.end(), rng); // NOLINT(cert-msc50-cpp)
+        for (const auto &op : shuffled) {
+            Batch      b{{{.key = op.key, .kind = op.del ? OpKind::kDelete : OpKind::kPut, .value = op.value}}};
+            const auto status = t.apply(op.slot, b);
+            ASSERT_TRUE(status.ok()) << status.to_string() << " at slot " << op.slot;
+        }
+        for (size_t index = begin; index < end; ++index) {
+            const auto &op = ops[index];
+            if (op.del) {
+                expected.erase(op.key);
+            }
+            else {
+                expected[op.key] = op.value;
+            }
+        }
+        expect_parity(t, expected);
+        ASSERT_TRUE(t.flush().ok());
+        expect_parity(t, expected);
+        // The next shuffled window needs its independent gap reserve. Finish
+        // the accepted retirement work from this fully resolved window first;
+        // successful publication alone does not release retired allocation.
+        account->drain_retirements();
     }
-    expect_parity(t, oracle); // pre-flush (L0 only)
 
     // Now make everything contiguous and flush; state must still match.
     t.force_advance_slot(M);

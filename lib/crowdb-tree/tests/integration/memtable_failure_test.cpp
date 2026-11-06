@@ -27,7 +27,7 @@ Batch values(const std::string &value)
 
 void fail_second_key(void * /*context*/, Point point, Slice key)
 {
-    if (point == Point::kBeforeVersionCas && key == Slice("b")) {
+    if (point == Point::kBeforePrepare && key == Slice("b")) {
         throw std::bad_alloc();
     }
 }
@@ -52,7 +52,7 @@ Status apply_variant(Crowdbtree &tree, int variant, uint64_t slot)
 }
 } // namespace
 
-TEST(MemTableFailure, PartialApplyReleasesAdmissionWithoutCreditingItsSlot)
+TEST(MemTableFailure, PreparationFailurePublishesNoKeysAndDoesNotCreditItsSlot)
 {
     for (int variant = 0; variant < 3; ++variant) {
         Crowdbtree tree;
@@ -62,9 +62,8 @@ TEST(MemTableFailure, PartialApplyReleasesAdmissionWithoutCreditingItsSlot)
         EXPECT_EQ(apply_variant(tree, variant, 2).code(), Code::kResourceExhausted);
         EXPECT_EQ(table->writers(), 0U);
         EXPECT_EQ(tree.contiguous_slot(), 1U);
-        EXPECT_EQ(tree.get_view("a").slot(), 2U);
+        EXPECT_EQ(tree.get_view("a").slot(), 1U);
         EXPECT_EQ(tree.get_view("b").slot(), 1U);
-        EXPECT_EQ(Access::counters(tree).failed_batches.load(), 1U);
         table->set_hook_for_tests(nullptr, nullptr);
         ASSERT_TRUE(tree.flush().ok());
         uint64_t    slot = 0;
@@ -80,27 +79,24 @@ TEST(MemTableFailure, PartialApplyReleasesAdmissionWithoutCreditingItsSlot)
     }
 }
 
-TEST(MemTableFailure, OptionalPruningFailureKeepsSuccessfulCompletion)
+TEST(MemTableFailure, FailureBeforeSecondPreparedKeyReturnsItsPermitForRetry)
 {
     Crowdbtree tree;
-    ASSERT_TRUE(tree.apply(1, Batch{{{"a", OpKind::kPut, "old"}}}).ok());
-    auto table = Access::active(tree);
-    int  calls = 0;
-    table->set_hook_for_tests(&calls, [](void *context, Point point, Slice) {
-        if (point == Point::kBeforeVersionCas && ++*static_cast<int *>(context) == 2) {
-            throw std::bad_alloc();
-        }
-    });
-    ASSERT_TRUE(tree.apply(2, Batch{{{"a", OpKind::kPut, "new"}}}).ok());
-    EXPECT_EQ(tree.contiguous_slot(), 2U);
+    auto       table = Access::active(tree);
+    table->set_hook_for_tests(nullptr, fail_second_key);
+    EXPECT_EQ(tree.apply(1, values("unpublished")).code(), Code::kResourceExhausted);
     EXPECT_EQ(table->writers(), 0U);
-    EXPECT_EQ(table->memory().history_count, 1U);
+    EXPECT_EQ(table->count(), 0U);
+    EXPECT_EQ(tree.contiguous_slot(), 0U);
     table->set_hook_for_tests(nullptr, nullptr);
-    ASSERT_TRUE(tree.apply(3, Batch{{{"a", OpKind::kPut, "next"}}}).ok());
-    EXPECT_EQ(table->memory().history_count, 0U);
+    ASSERT_TRUE(tree.apply(1, values("retry")).ok());
+    ASSERT_TRUE(tree.flush().ok());
+    EXPECT_EQ(tree.get_view("a").value().to_string(), "retry");
+    EXPECT_EQ(tree.get_view("b").value().to_string(), "retry");
+    EXPECT_EQ(tree.last_applied_slot(), 1U);
 }
 
-TEST(MemTableFailure, IncompleteL1PublicationBlocksExportsUntilRetry)
+TEST(MemTableFailure, FailedPublicationPreservesAtomicOldSnapshotAndRepairableSources)
 {
     MemPageStore store;
     Config       options;
@@ -108,98 +104,90 @@ TEST(MemTableFailure, IncompleteL1PublicationBlocksExportsUntilRetry)
     Crowdbtree tree(options);
     ASSERT_TRUE(tree.apply(1, values("old")).ok());
     ASSERT_TRUE(tree.flush().ok());
+    auto snapshot = tree.snapshot_view();
     ASSERT_TRUE(tree.apply(2, values("new")).ok());
-    Access::fail_publication(tree, [] { throw std::bad_alloc(); });
+    auto &publisher = RuntimeTreeAccess_for_tests::core(tree).publisher();
+    publisher.set_before_root_for_tests([] { throw std::bad_alloc(); });
     EXPECT_FALSE(tree.flush().ok());
     EXPECT_EQ(tree.last_applied_slot(), 1U);
     EXPECT_EQ(tree.get_view("b").value().to_string(), "new");
-    EXPECT_FALSE(tree.snapshot().ok());
-    EXPECT_THROW((void)tree.snapshot_view(), std::runtime_error);
-    std::unique_ptr<SnapshotExport> portable;
-    EXPECT_FALSE(snapshot_export_begin(tree, snapshot_format::kPortable, 4096, &portable).ok());
-    EXPECT_EQ(portable, nullptr);
-    std::vector<NativeFrame> frames;
-    EXPECT_FALSE(tree.collect_native_frames(&frames, nullptr, nullptr).ok());
-    std::unique_ptr<NativeFrameIterator> iterator;
-    EXPECT_FALSE(tree.open_native_frame_iterator(nullptr, &iterator).ok());
-    Access::fail_publication(tree, nullptr);
+    uint64_t    slot = 0;
+    std::string value;
+    ASSERT_TRUE(snapshot->get("b", &slot, &value));
+    EXPECT_EQ(slot, 1U);
+    EXPECT_EQ(value, "old");
+    publisher.set_before_root_for_tests({});
     ASSERT_TRUE(tree.flush().ok());
     ASSERT_TRUE(tree.snapshot().ok());
     EXPECT_EQ(tree.last_applied_slot(), 2U);
+    EXPECT_EQ(tree.get_view("b").value().to_string(), "new");
+    ASSERT_TRUE(snapshot->get("b", &slot, &value));
+    EXPECT_EQ(value, "old");
 }
 
-TEST(MemTableFailure, ReplacementDrainsOldBatchesBeforeAdmittingNewGeneration)
+TEST(MemTableFailure, ReplacementDrainsOldBatchesBeforeInstallingNewGeneration)
 {
     Crowdbtree         tree;
+    auto               table = Access::active(tree);
     std::promise<void> entered;
     std::promise<void> release;
     auto               resume = release.get_future();
-    auto               old    = std::async(std::launch::async, [&] {
-        auto batch = Access::admit(tree);
-        entered.set_value();
-        resume.wait();
-        batch.table->upsert("old", 1, encode_cell_buf(1, OpKind::kPut, "old"), batch.bound);
-        Access::finish(tree, 1);
+
+    struct Pause
+    {
+        std::promise<void> &entered;
+        std::future<void>  &resume;
+    } pause{.entered = entered, .resume = resume};
+
+    table->set_hook_for_tests(&pause, [](void *argument, Point point, Slice) {
+        if (point == Point::kBeforePrepare) {
+            auto &pause = *static_cast<Pause *>(argument);
+            pause.entered.set_value();
+            pause.resume.wait();
+        }
     });
+    auto old = std::async(std::launch::async, [&] { return tree.put("old", "old"); });
     entered.get_future().wait();
-    auto       reset    = std::async(std::launch::async, [&] { return tree.clear(); });
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    while (!Access::replacing(tree) && std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::yield();
-    }
-    EXPECT_TRUE(Access::replacing(tree));
-    auto next = std::async(std::launch::async, [&] { return tree.apply(1, values("new")); });
-    EXPECT_EQ(next.wait_for(std::chrono::milliseconds(0)), std::future_status::timeout);
+    auto reset = std::async(std::launch::async, [&] { return tree.clear(); });
+    EXPECT_EQ(reset.wait_for(std::chrono::milliseconds(0)), std::future_status::timeout);
     release.set_value();
-    old.get();
+    EXPECT_TRUE(old.get().ok());
     EXPECT_TRUE(reset.get().ok());
-    EXPECT_TRUE(next.get().ok());
+    table->set_hook_for_tests(nullptr, nullptr);
+    ASSERT_TRUE(tree.apply(1, values("new")).ok());
     EXPECT_FALSE(tree.get_view("old").found());
     EXPECT_EQ(tree.get_view("a").value().to_string(), "new");
     EXPECT_EQ(tree.contiguous_slot(), 1U);
 }
 
-TEST(MemTableFailure, MetricsSeparateLogicalMergeFromDelayedPhysicalReclamation)
+TEST(MemTableFailure, LogicalReplacementDoesNotFreeBorrowedPayload)
 {
-    Crowdbtree tree;
-    ASSERT_TRUE(tree.apply(1, values("one")).ok());
-    auto borrowed = tree.get_view("a");
-    ASSERT_TRUE(tree.apply(2, values("two")).ok());
-    ASSERT_TRUE(tree.apply(2, values("replay")).ok());
-    auto &metrics = Access::counters(tree);
-    EXPECT_EQ(metrics.overwrite.load(), 2U);
-    EXPECT_EQ(metrics.keep.load(), 2U);
-    EXPECT_EQ(metrics.merged.load(), 2U);
-    EXPECT_EQ(metrics.keep_pending.load(), 2U);
-    EXPECT_EQ(Access::active(tree)->memory().history_count, 0U);
-    auto      &epoch    = Access::epoch(tree);
-    const auto resident = epoch.memtable_allocation()->load();
-    epoch.try_reclaim();
-    EXPECT_EQ(epoch.memtable_allocation()->load(), resident);
+    GetView borrowed;
+    {
+        Crowdbtree tree;
+        ASSERT_TRUE(tree.apply(1, values("one")).ok());
+        borrowed = tree.get_view("a");
+        ASSERT_TRUE(tree.apply(2, values("two")).ok());
+        ASSERT_TRUE(tree.apply(2, values("two")).ok());
+        ASSERT_TRUE(tree.flush().ok());
+        RuntimeTreeAccess_for_tests::reclaim(tree);
+        EXPECT_EQ(borrowed.value().to_string(), "one");
+        EXPECT_EQ(tree.get_view("a").value().to_string(), "two");
+    }
     EXPECT_EQ(borrowed.value().to_string(), "one");
-    borrowed = {};
-    epoch.try_reclaim();
-    EXPECT_LT(epoch.memtable_allocation()->load(), resident);
 }
 
-TEST(MemTableFailure, DescriptorCopyLatencyIncludesAbortedPreparation)
+TEST(MemTableFailure, AbortedPreparationDoesNotConsumeAutomaticSlot)
 {
     Crowdbtree tree;
-    tree.init_metrics("copy-test", "memory");
-    auto *latency = Access::copy_latency(tree);
-    ASSERT_NE(latency, nullptr);
-    ASSERT_TRUE(tree.apply(1, values("old")).ok());
-    auto first = latency->flush();
-    // Each key's completion prune reconstructs its existing descriptor.
-    EXPECT_EQ(first.count, 2U);
+    ASSERT_TRUE(tree.batch_put(values("old")).ok());
     auto table = Access::active(tree);
     table->set_hook_for_tests(nullptr, fail_second_key);
-    EXPECT_EQ(tree.apply(2, values("new")).code(), Code::kResourceExhausted);
+    EXPECT_EQ(tree.batch_put(values("failed")).code(), Code::kResourceExhausted);
     table->set_hook_for_tests(nullptr, nullptr);
-    auto failed = latency->flush();
-    // Both candidates copied current + anchor; only the first CAS published.
-    EXPECT_EQ(failed.count, 2U);
-    EXPECT_GE(failed.sum, failed.max);
-    EXPECT_EQ(failed.total_count, first.count + failed.count);
+    ASSERT_TRUE(tree.batch_put(values("next")).ok());
+    EXPECT_EQ(tree.get_view("a").slot(), 2U);
+    EXPECT_EQ(tree.get_view("b").slot(), 2U);
+    EXPECT_EQ(tree.contiguous_slot(), 2U);
 }
 #endif

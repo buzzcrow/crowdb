@@ -8,6 +8,6 @@ pub(super) use crate::common::hardware::{
 #[tokio::test]
 #[ignore = "requires the owned container fixture"]
 async fn seed() {
-    let hardware = crowdb_kv_client::HardwareClient::new(super::kv_client());
+    let hardware = crowdb_paxos_kv_client::HardwareClient::new(super::kv_client());
     crate::common::hardware::seed_hardware(&hardware, &standard_disk_ids_3()).await;
 }

@@ -2,6 +2,8 @@
 # Licensed under the Apache License, Version 2.0.
 """Reuse the ordinary host launch validator before accepting runtime ownership."""
 
+from ports import WEB_BASE
+
 import hashlib
 import ipaddress
 import json
@@ -81,7 +83,7 @@ def management(options):
     if str(address) not in {value['local'] for interface in interfaces
                             for value in interface.get('addr_info', [])}:
         raise ValueError('management address is not assigned to the selected interface')
-    return 'http://' + (f'[{address}]' if address.version == 6 else str(address)) + ':9090'
+    return 'http://' + (f'[{address}]' if address.version == 6 else str(address)) + f':{WEB_BASE}'
 
 
 def validate(record, running):

@@ -13,7 +13,7 @@ use crowdb_chunkdb::{
     storage::ChunkStore,
 };
 use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbRpcTransport};
-use crowdb_kv_client::{ChunkSlotMapClient, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{ChunkSlotMapClient, ServiceRegistryClient};
 use crowdb_protocol::chunk_slot::{ChunkSlot, ChunkSlotBootstrap, ChunkStorageGroup};
 use crowdb_protocol::chunkdb::rpc::{Chunk, ChunkState, DeleteChunkRequest};
 use crowdb_protocol::common::ChunkId;

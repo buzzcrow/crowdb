@@ -7,10 +7,6 @@
 //! `InstanceKey`) implement both [`BinaryKey`] and [`TextKey`]. Data-
 //! group keys (`ZoneKey`, `BusyBlockKey`, `FreeBlockKey`) implement
 //! [`BinaryKey`] only.
-//!
-//! See `doc/design/protocol/design-crowdb-protocol-key.md` §5 for frozen layouts.
-//! See `doc/design/diskdb/design-crowdb-diskdb.md` §5 and §7 for the
-//! component-specific hierarchy.
 
 use super::encoding::{
     check_exact, check_path_exact, decode_disk_id, decode_header, decode_path_disk_id, decode_path_u64,

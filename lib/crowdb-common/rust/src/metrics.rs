@@ -20,6 +20,8 @@ pub mod name;
 pub mod point;
 pub mod registry;
 pub mod runner;
+mod sampler;
+pub use sampler::MetricsSampler;
 pub mod timestamp;
 
 pub use bandwidth::{Bandwidth, BandwidthSnapshot};

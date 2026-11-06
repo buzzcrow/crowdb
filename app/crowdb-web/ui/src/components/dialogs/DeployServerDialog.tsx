@@ -18,7 +18,7 @@ export interface DeployServerDialogProps {
 }
 
 /**
- * Deploy a `crowdb-kv-server` instance on a node. Required before that
+ * Deploy a `crowdb-paxos-kv-server` instance on a node. Required before that
  * node can host any store / group / replica. Backend contract:
  * `crowdb-console/web/src/lifecycle.rs::DeployNodeServerBody`.
  */
@@ -26,8 +26,8 @@ export function DeployServerDialog({
   isOpen,
   onClose,
   nodeId,
-  defaultRestPort = '19910',
-  defaultRpcPort = '19920',
+  defaultRestPort = '',
+  defaultRpcPort = '',
   onSuccess,
 }: DeployServerDialogProps) {
   const [restPort, setRestPort] = useState(defaultRestPort);

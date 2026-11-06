@@ -4,6 +4,7 @@
 // PT7: snapshot export / import (portable stream + file wrappers).
 #include "crowdb-common/crc32c.h"
 #include "crowdb-tree/crowdb-tree.h"
+#include "crowdb-tree/maptable/frame_page.h"
 #include "crowdb-tree/snapshot/snapshot_io.h"
 #include "test_tmp.h"
 
@@ -446,11 +447,18 @@ TEST(SnapshotExport, NativeCrcTamperRejected)
         ASSERT_TRUE(exp->next_chunk(&c, &done).ok());
         stream += c;
     }
-    ASSERT_GT(stream.size(), 64U);
-    stream[40] = static_cast<char>(stream[40] ^ 0xff); // flip a byte in the frame body
+    // Native header (33), frame record header (12), then the frame body.
+    constexpr size_t body_offset = 33 + 12 + kFrameHeaderSize;
+    ASSERT_GT(stream.size(), body_offset);
+    stream[body_offset] = static_cast<char>(stream[body_offset] ^ 0xff);
 
-    Crowdbtree     b(opt);
+    Crowdbtree b(opt);
+    ASSERT_TRUE(b.apply(1, Batch{{{.key = "untouched", .kind = OpKind::kPut, .value = "v"}}}).ok());
+    ASSERT_TRUE(b.flush().ok());
     SnapshotImport imp(b);
-    ASSERT_TRUE(imp.feed(Slice(stream)).ok());
+    const auto     status = imp.feed(Slice(stream));
+    EXPECT_EQ(status.code(), Code::kCorruption) << status.to_string();
     EXPECT_EQ(imp.finish(nullptr).code(), Code::kCorruption);
+    EXPECT_EQ(b.get_view("untouched").value().to_string(), "v");
+    EXPECT_EQ(b.last_applied_slot(), 1U);
 }

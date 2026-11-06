@@ -8,7 +8,7 @@ use crowdb_chunk_stream::{
     memory::MemoryStreamStore, ChunkStream, KvStreamMetadataStore, StreamConfig, StreamMetadataStore,
     StreamName, StreamPurpose, StreamRecord, StreamRecordState,
 };
-use crowdb_kv_client::ReadMode;
+use crowdb_paxos_kv_client::ReadMode;
 use crowdb_protocol::{
     chunk_stream::{decode_stream_chunk_record, StreamChunkState},
     key::{BinaryKey, StreamChunkRecordKey, StreamChunkRecordOrder},
@@ -77,7 +77,7 @@ async fn actual_kv_reverse_seek_uses_ordered_keys_and_never_updates_historical_r
         .get(1, 1, &first.0, ReadMode::Linearizable, None)
         .await
         .unwrap();
-    let crowdb_kv_client::GetOutcome::Found { value, .. } = first_again else {
+    let crowdb_paxos_kv_client::GetOutcome::Found { value, .. } = first_again else {
         panic!("sealed record missing")
     };
     assert_eq!(value, first.1);
@@ -140,7 +140,7 @@ async fn actual_kv_collection_uses_bounded_keys_and_releases_only_trimmed_chunks
 
 #[tokio::test]
 async fn checkpoint_publication_waits_for_an_inflight_tail_guard_update() {
-    use crowdb_kv_client::GetOutcome;
+    use crowdb_paxos_kv_client::GetOutcome;
     use std::time::Duration;
 
     let server = metadata_server::TestMetadataServer::start().await;
@@ -213,7 +213,7 @@ async fn checkpoint_publication_waits_for_an_inflight_tail_guard_update() {
 
 #[tokio::test]
 async fn read_pin_waits_for_an_inflight_tail_guard_update() {
-    use crowdb_kv_client::GetOutcome;
+    use crowdb_paxos_kv_client::GetOutcome;
     use std::time::Duration;
 
     let server = metadata_server::TestMetadataServer::start().await;

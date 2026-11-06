@@ -64,3 +64,9 @@ void invoke_c_complete(crowdb_rpc_on_complete cb, void *user_data, uint64_t requ
 void invoke_c_handler(crowdb_rpc_handler_fn callback, void *user_data, Frame *request, Connection *conn);
 
 } // namespace crowdb::rpc
+
+namespace crowdb::rpc
+{
+// Consumes one Buffer reference on both success and failure.
+[[nodiscard]] crowdb_rpc_buffer_t wrap_owned_buffer(Buffer *buffer) noexcept;
+} // namespace crowdb::rpc

@@ -75,6 +75,7 @@ impl TestRpcReadServer {
                         id: request.request_id,
                         rpc_create_nano: 0,
                         ret_code: FBDiskIoRetCode::Success,
+                        request_age_checked: false,
                     },
                 );
                 builder.finish(response, None);

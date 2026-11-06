@@ -69,7 +69,7 @@ class DiskioServer
     // pulling the generated header into this .h).
     static crowdb::rpc::Buffer *build_response_ctrl(crowdb::rpc::BufferPool *pool, uint64_t request_id,
                                                     uint64_t rpc_create_nano, int16_t ret_code, uint16_t msg_type,
-                                                    bool sync_completed = false);
+                                                    bool sync_completed = false, bool read_age_checked = false);
 
     // Send an error response synchronously (disk not found, parse error).
     void send_error_response(crowdb::rpc::Connection *conn, uint64_t request_id, uint64_t rpc_create_nano,
@@ -78,7 +78,7 @@ class DiskioServer
     static void send_response(const std::shared_ptr<crowdb::rpc::Transport>  &transport,
                               const std::shared_ptr<crowdb::rpc::Connection> &connection, uint64_t request_id,
                               uint64_t created, uint16_t type, int16_t code, crowdb::rpc::Buffer *data = nullptr,
-                              bool sync_completed = false);
+                              bool sync_completed = false, bool read_age_checked = false);
 };
 
 } // namespace crowdb::diskio

@@ -4,7 +4,7 @@
 //! Bounded owner-specific windows over validated fixed slot maps.
 
 use axum::extract::{Query, State};
-use crowdb_kv_client::ChunkSlotMapClient;
+use crowdb_paxos_kv_client::ChunkSlotMapClient;
 use crowdb_protocol::chunk_slot::{ChunkSlotBitmap, ChunkStorageGroup, CHUNK_SLOT_COUNT};
 use serde::Deserialize;
 use serde_json::json;

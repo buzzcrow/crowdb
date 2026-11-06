@@ -10,7 +10,7 @@ use crowdb_console_shared::{
     ops::{kv_logical, OpContext},
     ConsoleConfig,
 };
-use crowdb_kv_client::CrowdbKvClient;
+use crowdb_paxos_kv_client::PaxosKvClient;
 use crowdb_protocol::mgmt::node::NodeBinding;
 
 use super::Result;
@@ -18,7 +18,7 @@ use super::Result;
 pub(super) async fn ready(
     root: &std::path::Path,
     binding: &NodeBinding,
-    kv: &Arc<CrowdbKvClient>,
+    kv: &Arc<PaxosKvClient>,
 ) -> Result<bool> {
     let ctx = OpContext::with_shared_client_preserving_hint(
         Arc::clone(kv),

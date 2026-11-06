@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 #include "backend/chunk/chunk_page_staging.h"
+#include "buffer_pool_test_support.h"
 #include "crowdb-tree/backend/async_page_store.h"
 #include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/crowdb-tree.h"
@@ -9,6 +10,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <atomic>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -43,6 +45,11 @@ class TestSnapshotBufferStore final : public PageStore, public AsyncPageStore
   public:
     TestSnapshotBufferStore() : bytes_(96 * 1024 * 1024)
     {
+    }
+
+    [[nodiscard]] bool write_completion_is_reloadable() const noexcept override
+    {
+        return true;
     }
 
     Status write_at(uint64_t off, const uint8_t *buf, size_t len) override
@@ -101,6 +108,7 @@ class TestSnapshotBufferStore final : public PageStore, public AsyncPageStore
     uint64_t submit_write(PageAddr addr, const void *buf, size_t len, AsyncCompletion done) override
     {
         pending_ = Pending{.addr = addr, .data = buf, .length = len, .done = done, .typed = false};
+        wake();
         return 0;
     }
 
@@ -108,6 +116,7 @@ class TestSnapshotBufferStore final : public PageStore, public AsyncPageStore
                                 AsyncCompletion done) override
     {
         pending_ = Pending{.addr = addr, .data = buf, .length = len, .done = done, .typed = true};
+        wake();
         return 0;
     }
 
@@ -121,13 +130,21 @@ class TestSnapshotBufferStore final : public PageStore, public AsyncPageStore
     {
     }
 
+    void wake()
+    {
+        ready_.store(true, std::memory_order_release);
+        ready_.notify_one();
+    }
+
     bool complete_next()
     {
+        ready_.wait(false, std::memory_order_acquire);
         if (!pending_.has_value()) {
             return false;
         }
         const auto write = pending_.value();
         pending_.reset();
+        ready_.store(false, std::memory_order_release);
         const auto *data   = static_cast<const uint8_t *>(write.data);
         auto        status = write.typed ? write_typed_at(PagePurpose::kPageIndex, write.addr, data, write.length)
                                          : write_at(write.addr, data, write.length);
@@ -152,6 +169,7 @@ class TestSnapshotBufferStore final : public PageStore, public AsyncPageStore
     std::vector<uint8_t>   bytes_;
     uint64_t               size_ = 0;
     std::optional<Pending> pending_;
+    std::atomic<bool>      ready_{false};
 };
 
 class SnapshotMemoryTest : public ::testing::TestWithParam<bool>
@@ -177,14 +195,17 @@ TEST_P(SnapshotMemoryTest, ReleasesCompletedPageBuffersBeforeWritingMetadata)
         store.baseline = resident_bytes();
         ASSERT_GT(store.baseline, 0U);
         if (GetParam()) {
-            bool complete = false;
+            std::atomic<bool> complete{false};
             tree.snapshot_async([&](Status status, uint64_t applied) {
                 EXPECT_TRUE(status.ok()) << status.to_string();
                 EXPECT_EQ(applied, 256U);
-                complete = true;
+                complete.store(true, std::memory_order_release);
+                store.wake();
             });
-            while (!complete) {
-                ASSERT_TRUE(store.complete_next());
+            while (!complete.load(std::memory_order_acquire)) {
+                if (!store.complete_next()) {
+                    ASSERT_TRUE(complete.load(std::memory_order_acquire));
+                }
             }
         }
         else {
@@ -251,11 +272,11 @@ TEST(SnapshotMemory, PaddedOverlayKeepsZeroCoverageWithoutRetainingPadding)
 
 TEST(SnapshotMemory, UnusedFrameCapacityDoesNotPrefaultTheArena)
 {
-    MemPageStore store(65536);
-    const auto   before = resident_bytes();
-    BufferPool   pool(256U * 1024 * 1024, 65536, &store);
-    const auto   current = resident_bytes();
-    const auto   growth  = current > before ? current - before : 0;
+    MemPageStore   store(65536);
+    const auto     before = resident_bytes();
+    TestBufferPool pool(256U * 1024 * 1024, 65536, &store);
+    const auto     current = resident_bytes();
+    const auto     growth  = current > before ? current - before : 0;
     std::cout << "Unused frame-cache RSS growth: " << growth << " bytes\n";
     EXPECT_LT(growth, 8U * 1024 * 1024);
     EXPECT_EQ(pool.stats().num_frames, 4096U);

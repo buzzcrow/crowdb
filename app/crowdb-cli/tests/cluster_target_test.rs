@@ -20,7 +20,7 @@ fn run(root: &Path, selected: &[&str]) -> String {
         .env_remove("CROWDB_SYSTEM_PORT")
         .args(selected)
         .args([
-            "kv",
+            "paxos-kv",
             "data",
             "put",
             "--store",
@@ -117,7 +117,6 @@ fn cli_rejects_removed_system_address_flags() {
 #[test]
 fn retained_workloads_require_a_target_before_any_runtime_or_native_effect() {
     for args in [
-        vec!["bench", "kv", "prepare", "--keys", "1"],
         vec!["bench", "diskdb", "allocate"],
         vec!["bench", "chunkdb", "allocate"],
         vec!["bench", "chunkio", "write"],

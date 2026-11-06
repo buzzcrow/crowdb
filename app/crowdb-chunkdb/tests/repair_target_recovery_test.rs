@@ -7,7 +7,7 @@ mod repair_targets;
 
 use crowdb_chunkdb::repair::decode_payload;
 use crowdb_chunkdb::task::SegmentOwnerResolver;
-use crowdb_kv_client::{GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{GetOutcome, ReadMode};
 use crowdb_protocol::chunk_task::{ChunkTaskState, RepairTargetPhase};
 use crowdb_protocol::chunkdb::rpc::{SegmentOwnerDisposition, Strip};
 use crowdb_protocol::key::{BinaryKey, BusyBlockKey};

@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use crowdb_kv_client::ServiceRegistryClient;
+use crowdb_paxos_kv_client::ServiceRegistryClient;
 use crowdb_protocol::{common::DiskioHardwareScope, sysdata::DiskGroupEntry};
 
 pub async fn heartbeat(registry: &ServiceRegistryClient, group: &DiskGroupEntry) {

@@ -13,7 +13,7 @@ use crowdb_access_server::s3::{
     S3OperationsFuture,
 };
 use crowdb_chunk_client::{metrics::ReadinessMetrics, ChunkIoClient, DiskWriter, Result};
-use crowdb_kv_client::DiskRecord;
+use crowdb_paxos_kv_client::DiskRecord;
 use crowdb_protocol::{
     common::{DiskId, HwStatus},
     diskdb::rpc::{DiskValue, Segment},

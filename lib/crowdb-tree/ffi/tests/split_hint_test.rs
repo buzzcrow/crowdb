@@ -13,7 +13,7 @@ fn resident_index_hint_is_interior_without_reading_values() {
     assert!(tree.approximate_split_key().unwrap().is_none());
     for sequence in 1..=5000 {
         tree.apply_put(sequence, format!("key-{sequence:05}").as_bytes(), &[9; 100])
-            .unwrap();
+            .unwrap_or_else(|error| panic!("apply slot {sequence}: {error:?}"));
     }
     tree.flush().unwrap();
     let before = tree.stats();
@@ -40,10 +40,14 @@ fn leaf_hint_respects_bounded_range_and_empty_keys() {
         tree.apply_put(index as u64 + 1, key, b"value").unwrap();
     }
     tree.flush().unwrap();
-    // Small flushes can leave a delta over the initially empty leaf base.
-    // A snapshot materializes the leaf; structural hints never force that work.
-    tree.snapshot().unwrap();
+    // Flush publishes a resident overlay. Hints inspect it without forcing
+    // checkpoint encoding or loading a cold checkpoint base.
+    let before = tree.stats();
     let key = tree.approximate_split_key().unwrap().unwrap();
+    let after = tree.stats();
+    assert_eq!(after.buffer_pool_misses, before.buffer_pool_misses);
+    assert_eq!(after.l1_get_total, before.l1_get_total);
+    assert_eq!(after.mt_get_total, before.mt_get_total);
     assert!(!key.is_empty());
     assert!(key.as_slice() < b"z".as_slice());
     assert!(tree.get(&key).unwrap().is_some());

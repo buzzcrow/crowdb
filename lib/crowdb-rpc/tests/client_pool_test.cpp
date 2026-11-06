@@ -187,7 +187,7 @@ struct CallState
     std::atomic<int>  recv_status{CROWDB_RPC_OK};
 };
 
-extern "C" void call_recv_cb(uint64_t /*request_id*/, crowdb_rpc_buffer_t /*control*/, crowdb_rpc_buffer_t data,
+extern "C" void call_recv_cb(uint64_t /*request_id*/, crowdb_rpc_buffer_t control, crowdb_rpc_buffer_t data,
                              crowdb_rpc_status status, void *user_data)
 {
     auto *s = static_cast<CallState *>(user_data);
@@ -195,6 +195,7 @@ extern "C" void call_recv_cb(uint64_t /*request_id*/, crowdb_rpc_buffer_t /*cont
     if (data != nullptr) {
         crowdb_rpc_buffer_release(data);
     }
+    crowdb_rpc_buffer_release(control);
     s->got_response.store(true, std::memory_order_release);
 }
 
@@ -270,8 +271,12 @@ TEST_F(CallerLoopbackTest, CallAndReceiveResponse)
     EXPECT_EQ(state.recv_status.load(), CROWDB_RPC_OK);
 
     // Late response (after the callback already fired) — should be discarded.
-    auto *late_frame = new Frame;
-    caller.on_response(req_id, late_frame);
+    auto      *late_frame = new Frame;
+    const bool claimed    = caller.on_response(req_id, late_frame);
+    EXPECT_FALSE(claimed);
+    if (!claimed) {
+        delete late_frame;
+    }
     // No crash, no double-callback.
 
     transport.stop();
@@ -300,13 +305,15 @@ struct SlabCallbackState
     std::atomic<uint64_t> last_request_id{0};
 };
 
-extern "C" void slab_test_cb(uint64_t request_id, crowdb_rpc_buffer_t /*control*/, crowdb_rpc_buffer_t /*data*/,
+extern "C" void slab_test_cb(uint64_t request_id, crowdb_rpc_buffer_t control, crowdb_rpc_buffer_t data,
                              crowdb_rpc_status status, void *user_data)
 {
     auto *s = static_cast<SlabCallbackState *>(user_data);
-    s->call_count.fetch_add(1, std::memory_order_relaxed);
+    crowdb_rpc_buffer_release(control);
+    crowdb_rpc_buffer_release(data);
     s->last_status.store(status, std::memory_order_relaxed);
     s->last_request_id.store(request_id, std::memory_order_relaxed);
+    s->call_count.fetch_add(1, std::memory_order_release);
 }
 
 // Test: slab fallback to map when the slot is occupied by a slow request.
@@ -510,7 +517,11 @@ TEST_F(CallerLoopbackTest, ReaperTimesOutSlabSlot)
     late_resp->request_id      = 1;
     late_resp->header.msg_type = 42;
     late_resp->data_buf        = nullptr;
-    caller.on_response(1, late_resp);
+    const bool claimed         = caller.on_response(1, late_resp);
+    EXPECT_FALSE(claimed);
+    if (!claimed) {
+        delete late_resp;
+    }
 
     EXPECT_EQ(state.call_count.load(std::memory_order_acquire), 1); // still 1
     EXPECT_EQ(rpc_resp_missed().window(), 1U);

@@ -71,10 +71,14 @@ impl Partition {
             child: child_artifact.clone(),
         };
         super::super::validate_split_artifact(&plan, &artifact, artifact.cutover_seq)?;
-        child
-            .tree
-            .force_advance_split_frontier(artifact.cutover_seq)
-            .await?;
+        // Recovery already replayed the complete inherited suffix and the
+        // child's own WAL. Do not install an unwritten-base overlay over
+        // those real child writes, or synthesize a missing replay frontier.
+        if child.snapshot().applied_seq < artifact.cutover_seq
+            || child.tree.last_applied_seq() < artifact.cutover_seq
+        {
+            return Err(ChunkKvError::ApplyStateUnknown);
+        }
         child.activate_local_split_writer(&artifact)?;
         {
             let mut current = self.split_transition.lock().await;
@@ -86,16 +90,10 @@ impl Partition {
             *current = Some(super::super::SplitTransition {
                 plan: plan.clone(),
                 artifact: None,
+                inheritance: Some(super::inheritance::ChildInheritance::replayed(artifact.clone())),
             });
         }
         self.install_child_split_ingress(&plan, child.clone()).await?;
-        super::stable_session::finish_child_inheritance(
-            self.tree.as_ref(),
-            &plan,
-            &artifact,
-            child.tree.as_ref(),
-        )
-        .await?;
         self.lifecycle.store(
             super::super::lifecycle_code(crate::PartitionLifecycle::SplitFinalizing),
             std::sync::atomic::Ordering::Release,
@@ -152,7 +150,7 @@ impl Partition {
             tree_config: crowdb_tree_ffi::Config::default(),
             journal: child.journal.clone(),
         };
-        let (artifact, child) = self
+        let (artifact, child, delta_records) = self
             .install_child_cutover_session(
                 plan,
                 target,
@@ -163,13 +161,14 @@ impl Partition {
                     proof.root_manifest_generation,
                     proof.base_applied_seq,
                 ),
+                proof.parent_cutover_offset,
             )
             .await?;
         Ok(super::PreparedSplit {
             artifact,
             child,
             child_rebuild: crowdb_tree_ffi::RangeRebuildStats::default(),
-            delta_records: 0,
+            delta_records,
         })
     }
 
@@ -185,13 +184,14 @@ impl Partition {
         stream: crowdb_chunk_stream::ChunkStream,
         parent_stream: crowdb_chunk_stream::ChunkStream,
     ) -> Result<(Self, PreparedSplitWriterArtifact)> {
-        let (tree, journal) = super::super::native_storage_parts(
+        let (tree, journal) = super::super::native::open_storage(
             artifact.tree_id,
-            &artifact.range,
+            artifact.range.clone(),
             tree_config,
             page_store,
             stream,
-        )?;
+        )
+        .await?;
         let source = Arc::new(crate::StreamPartitionJournal::new(
             parent_stream,
             artifact.parent_stream_name,

@@ -1,6 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+use crowdb_protocol::port::ports::WEB_BASE;
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -14,7 +15,7 @@ fn data() -> PathBuf {
 
 async fn request(http: &Client, path: &str, body: Option<Value>) -> Value {
     let addresses = crate::common::management::addresses(1);
-    let url = format!("http://{}:9090{path}", addresses[0]);
+    let url = format!("http://{}:{WEB_BASE}{path}", addresses[0]);
     let response = if let Some(body) = body {
         http.post(url).json(&body).send().await.unwrap()
     } else {
@@ -35,7 +36,7 @@ async fn empty_ui_persists_rack_and_node_across_restart() {
     assert_eq!(request(&http, "/api/stores", None).await, json!([]));
     let addresses = crate::common::management::addresses(1);
     assert!(http
-        .get(format!("http://{}:9090", addresses[0]))
+        .get(format!("http://{}:{WEB_BASE}", addresses[0]))
         .send()
         .await
         .unwrap()
@@ -43,7 +44,7 @@ async fn empty_ui_persists_rack_and_node_across_restart() {
         .is_success());
     for path in ["/", "/some/spa/route"] {
         let response = http
-            .get(format!("http://{}:9090{path}", addresses[0]))
+            .get(format!("http://{}:{WEB_BASE}{path}", addresses[0]))
             .send()
             .await
             .unwrap();
@@ -51,7 +52,7 @@ async fn empty_ui_persists_rack_and_node_across_restart() {
         assert!(response.text().await.unwrap().contains("id=\"root\""));
     }
     assert_eq!(
-        http.get(format!("http://{}:9090/healthz", addresses[0]))
+        http.get(format!("http://{}:{WEB_BASE}/healthz", addresses[0]))
             .send()
             .await
             .unwrap()
@@ -61,7 +62,7 @@ async fn empty_ui_persists_rack_and_node_across_restart() {
         "ok"
     );
     let racks = http
-        .get(format!("http://{}:9090/api/racks", addresses[0]))
+        .get(format!("http://{}:{WEB_BASE}/api/racks", addresses[0]))
         .send()
         .await
         .unwrap();
@@ -71,7 +72,7 @@ async fn empty_ui_persists_rack_and_node_across_restart() {
         .unwrap()
         .starts_with("application/json"));
     let traversal = http
-        .get(format!("http://{}:9090/../Cargo.toml", addresses[0]))
+        .get(format!("http://{}:{WEB_BASE}/../Cargo.toml", addresses[0]))
         .send()
         .await
         .unwrap()

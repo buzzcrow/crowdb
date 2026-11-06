@@ -4,7 +4,7 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use crowdb_chunk_client::{DiskWriter, IoError, Result};
-use crowdb_kv_client::DiskRecord;
+use crowdb_paxos_kv_client::DiskRecord;
 use crowdb_protocol::{
     common::{DiskId, HwStatus},
     diskdb::rpc::{DiskValue, Segment},

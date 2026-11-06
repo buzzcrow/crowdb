@@ -32,19 +32,21 @@ class TestDeferredEngine final : public IoEngine
 
     std::vector<Pending> pending;
 
-    void submit_write(Disk *, off_t, const uint8_t *data, size_t size, std::function<void(int)> done) override
+    void submit_write(Disk * /*unused*/, off_t /*unused*/, const uint8_t *data, size_t size,
+                      std::function<void(int)> done) override
     {
-        pending.push_back({data, nullptr, size, std::move(done)});
+        pending.push_back({.data = data, .output = nullptr, .size = size, .done = std::move(done)});
     }
 
-    void submit_read(Disk *, off_t, uint8_t *data, size_t size, uint64_t, std::function<void(int)> done) override
+    void submit_read(Disk * /*unused*/, off_t /*unused*/, uint8_t *data, size_t size, uint64_t /*unused*/,
+                     std::function<void(int)> done) override
     {
-        pending.push_back({nullptr, data, size, std::move(done)});
+        pending.push_back({.data = nullptr, .output = data, .size = size, .done = std::move(done)});
     }
 
-    void submit_fsync(Disk *, std::function<void(int)> done) override
+    void submit_fsync(Disk * /*unused*/, std::function<void(int)> done) override
     {
-        pending.push_back({nullptr, nullptr, 0, std::move(done)});
+        pending.push_back({.data = nullptr, .output = nullptr, .size = 0, .done = std::move(done)});
     }
 
     void complete(int result)
@@ -52,8 +54,9 @@ class TestDeferredEngine final : public IoEngine
         ASSERT_FALSE(pending.empty());
         auto io = std::move(pending.front());
         pending.erase(pending.begin());
-        if (io.output != nullptr && result > 0)
+        if (io.output != nullptr && result > 0) {
             std::memset(io.output, 0x5a, std::min(io.size, static_cast<size_t>(result)));
+        }
         io.done(result);
     }
 };
@@ -66,22 +69,22 @@ class TestDeferredDisk final : public Disk
         zones_.push_back({.zone_index = 0, .base_offset = 0, .capacity = 8 << 20});
     }
 
-    DiskType type() const override
+    [[nodiscard]] DiskType type() const override
     {
         return DiskType::Mem;
     }
 
-    int fd() const override
+    [[nodiscard]] int fd() const override
     {
         return 1;
     }
 
-    bool is_o_direct() const override
+    [[nodiscard]] bool is_o_direct() const override
     {
         return false;
     }
 
-    size_t block_size() const override
+    [[nodiscard]] size_t block_size() const override
     {
         return 1;
     }
@@ -91,14 +94,14 @@ class TestDeferredDisk final : public Disk
         return engine_;
     }
 
-    DiskId id() const override
+    [[nodiscard]] DiskId id() const override
     {
-        return {7, 9};
+        return {.high = 7, .low = 9};
     }
 
     Zone *find_zone(uint32_t index) override
     {
-        return index == 0 ? &zones_[0] : nullptr;
+        return index == 0 ? zones_.data() : nullptr;
     }
 
   private:
@@ -142,17 +145,35 @@ class DioLifetimeTest : public ::testing::Test
         return frame;
     }
 
-    Frame *read(uint32_t size)
+    Frame *read(uint32_t size, uint64_t created_ms = 0, bool probe = false)
     {
         flatbuffers::FlatBufferBuilder builder;
         crowdb::rpc::proto::FBInt128   disk(7, 9);
-        builder.Finish(proto::CreateFBDiskReadRequest(builder, 19, 0, &disk, 0, 0, size));
+        builder.Finish(proto::CreateFBDiskReadRequest(builder, 19, 0, &disk, 0, 0, size, 0, created_ms, probe));
         auto *frame       = new Frame;
         frame->request_id = 19;
         frame->control.assign(builder.GetBufferPointer(), builder.GetBufferPointer() + builder.GetSize());
         return frame;
     }
 };
+
+TEST_F(DioLifetimeTest, ExpiredProtectedReadDoesNotSubmitDiskIo)
+{
+    EXPECT_EQ(service->handle_read(read(4096, 1), connection.get()), nullptr);
+    EXPECT_TRUE(engine.pending.empty());
+}
+
+TEST_F(DioLifetimeTest, ProtectedReadProbeNeverAllocatesOrSubmitsDataIo)
+{
+    const auto now = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+            .count());
+    EXPECT_EQ(service->handle_read(read(0, now, true), connection.get()), nullptr);
+    EXPECT_TRUE(engine.pending.empty());
+    EXPECT_EQ(service->handle_read(read(4096, now), connection.get()), nullptr);
+    ASSERT_EQ(engine.pending.size(), 1U);
+    engine.complete(4096);
+}
 
 TEST_F(DioLifetimeTest, DiskOwnsExactPayloadUntilCompletionWithoutReplacementAdmission)
 {

@@ -552,6 +552,7 @@ impl ChunkdbRpcTransport {
             id: req_id,
             rpc_create_nano: 0,
             chunk_id: chunk_id_off.as_ref(),
+            fence_missing: false,
         };
         let fb_req = FBDeleteChunkRequest::create(&mut builder, &args);
         builder.finish(fb_req, None);

@@ -60,12 +60,12 @@ pub struct Node {
     /// `127.0.0.1` by default for simulated clusters.
     pub host: String,
     pub ssh: SshCreds,
-    /// 0 or 1 `crowdb-kv-server` per node, enforced console-side.
+    /// 0 or 1 `crowdb-paxos-kv-server` per node, enforced console-side.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub server: Option<ServerProcess>,
 }
 
-/// Console's view of one deployed `crowdb-kv-server` process.
+/// Console's view of one deployed `crowdb-paxos-kv-server` process.
 ///
 /// `mgmt_url` / `rpc_url` are the *intended* endpoints (persisted);
 /// `pid` / `state` / `health` / `last_seen_ms` are live cache filled by
@@ -86,7 +86,7 @@ pub struct ServerProcess {
     pub last_seen_ms: u64,
 }
 
-/// Lifecycle state of the `crowdb-kv-server` process (console's view).
+/// Lifecycle state of the `crowdb-paxos-kv-server` process (console's view).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProcState {
@@ -114,7 +114,7 @@ pub enum NodeHealth {
 
 // ── Per-node store / group / replica (physical "debugging" view) ────
 
-/// What `crowdb-kv-server` reports for one local `PxStore` on one node.
+/// What `crowdb-paxos-kv-server` reports for one local `PxStore` on one node.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeStore {
     pub node_id: NodeId,
@@ -152,7 +152,7 @@ pub struct LocalReplicaInfo {
     pub replica_id: ReplicaId,
     pub role: ReplicaRole,
     pub state: ReplicaState,
-    /// Mirrors `crowdb_kv`'s `KvStoreStatus::engine_healthy`, threaded through
+    /// Mirrors `crowdb_paxos_kv`'s `KvStoreStatus::engine_healthy`, threaded through
     /// from `crate::snapshot::KvStoreView` by
     /// `crate::monitor::legacy_topology_to_node_stores`.
     #[serde(default = "default_engine_healthy")]
@@ -186,7 +186,7 @@ pub enum ReplicaRole {
     Unknown,
 }
 
-/// Operational status of a replica (mirrors `crowdb-kv-server`'s reporting).
+/// Operational status of a replica (mirrors `crowdb-paxos-kv-server`'s reporting).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReplicaState {

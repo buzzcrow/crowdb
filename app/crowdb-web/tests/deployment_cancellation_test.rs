@@ -133,20 +133,19 @@ async fn cancel_and_reset(kind: &str, restart: bool) {
         TestChild::new(root.path())
     };
     let (mut path, mut body, service) = if kind == "diskdb" {
-        let port = crowdb_protocol::port::alloc::alloc_test_port_range(
-            crowdb_protocol::ServicePort::DiskdbListen,
-            3,
-        )[0];
+        let port =
+            crowdb_protocol::port::alloc::alloc_test_port_range(crowdb_protocol::ServicePort::DiskdbRpc, 3)
+                [0];
         (
             "/api/nodes/1/diskdb/deploy",
-            json!({"rpc_port": port}),
+            json!({"rpc_port": port, "http_port": free_port()}),
             "crowdb-diskdb",
         )
     } else {
         (
             "/api/nodes/1/server/deploy",
             json!({"rest_port": free_port(), "rpc_port": free_port(), "binary": stub.binary, "election_profile": "test"}),
-            "crowdb-kv-server",
+            "crowdb-paxos-kv-server",
         )
     };
     if restart {
@@ -203,11 +202,11 @@ async fn cancel_and_reset(kind: &str, restart: bool) {
 
 async fn prepare_diskdb_authority(state: &AppState) -> memory_kv::TestKvCluster {
     let metadata = memory_kv::TestKvCluster::start().await;
-    let kv = std::sync::Arc::new(crowdb_kv_client::CrowdbKvClient::new(
-        crowdb_kv_client::ClientConfig::new(metadata.mgmt_endpoints.clone()),
+    let kv = std::sync::Arc::new(crowdb_paxos_kv_client::PaxosKvClient::new(
+        crowdb_paxos_kv_client::ClientConfig::new(metadata.mgmt_endpoints.clone()),
     ));
     kv.seed_leader(0, 0, metadata.group0_leader_endpoint.clone());
-    crowdb_kv_client::CrowdbSysmdClient::from_shared(kv.clone())
+    crowdb_paxos_kv_client::CrowdbSysmdClient::from_shared(kv.clone())
         .add_group(0, 0)
         .await
         .unwrap();

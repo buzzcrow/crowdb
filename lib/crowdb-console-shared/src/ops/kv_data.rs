@@ -3,11 +3,11 @@
 
 //! KV data-plane operations: put, get, delete, scan, snapshot.
 //!
-//! Thin wrappers around [`CrowdbKvClient`] that resolve the leader from
+//! Thin wrappers around [`PaxosKvClient`] that resolve the leader from
 //! the topology cache and translate the client's `Error` into the
 //! console's `Error`.
 
-use crowdb_kv_client::{
+use crowdb_paxos_kv_client::{
     CreateSnapshotResponse, GetOutcome, ReadMode, ReleaseSnapshotResponse, ScanOutcome, SnapshotInfo,
     SnapshotScanResponse, WriteOutcome,
 };

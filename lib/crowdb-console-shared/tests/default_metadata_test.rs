@@ -7,8 +7,8 @@ mod default_metadata;
 mod default_preparation;
 
 use crowdb_console_shared::deployment::preparation;
-use crowdb_kv::cluster::{group::PxGroup, PxLocalReplica, PxLocalReplicaRole};
-use crowdb_kv_client::{GetOutcome, ReadMode};
+use crowdb_paxos_kv::cluster::{group::PxGroup, PxLocalReplica, PxLocalReplicaRole};
+use crowdb_paxos_kv_client::{GetOutcome, ReadMode};
 use default_metadata::TestDefaultMetadata;
 
 async fn ready(fixture: &TestDefaultMetadata) {
@@ -70,7 +70,7 @@ async fn three_owned_native_replicas_publish_native_listeners_and_allow_lineariz
         .zip(&fixture.stores)
         .zip(&fixture.endpoints)
     {
-        use crowdb_kv::cluster::KvServer;
+        use crowdb_paxos_kv::cluster::PaxosKvServer;
         assert_eq!(member.endpoint, store.listen_addr().unwrap().to_string());
         assert_ne!(format!("http://{}", member.endpoint), *management);
     }

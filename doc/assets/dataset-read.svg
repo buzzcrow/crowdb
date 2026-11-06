@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="1320" viewBox="0 0 1400 1320" role="img" aria-labelledby="title desc">
+<!-- Copyright 2026-present Gian; Licensed under the Apache License, Version 2.0. -->
+<title id="title">Dataset read: selection, storage, and delivery</title><desc id="desc">Resolve immutable input, select metadata first, and fetch only the projected field payloads.</desc>
+<defs>
+<marker id="ink" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" fill="#132b3c"/></marker>
+<marker id="muted" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" fill="#526879"/></marker>
+<marker id="blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" fill="#2463a5"/></marker>
+<marker id="teal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" fill="#007f78"/></marker>
+<marker id="purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" fill="#7461a8"/></marker>
+<marker id="gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" fill="#6d8493"/></marker>
+</defs>
+<rect width="1400" height="1320" rx="20" fill="#fbfcfd"/>
+<g font-family="Arial, Helvetica, sans-serif">
+<text x="42" y="49" font-size="27" fill="#132b3c" text-anchor="start" font-weight="700">Dataset read: selection, storage, and delivery</text>
+<text x="42" y="80" font-size="16" fill="#526879" text-anchor="start" font-weight="400">Resolve immutable input, select metadata first, and fetch only the projected field payloads.</text>
+<rect x="40" y="120" width="1320" height="82" rx="12" fill="#132b3c" stroke="#132b3c" stroke-width="1.3"/>
+<text x="700.0" y="156.0" font-size="21" fill="#fff" text-anchor="middle" font-weight="600">Dataset + Snapshot or latest/stable + optional Split + fields + read policy</text>
+<text x="700.0" y="179.0" font-size="14" fill="#c7dce4" text-anchor="middle" font-weight="400">HTTP Access Server or trusted native API</text>
+<rect x="40" y="285" width="380" height="88" rx="12" fill="#eaf1fb" stroke="#2463a5" stroke-width="1.3"/>
+<text x="230.0" y="324.0" font-size="18" fill="#132b3c" text-anchor="middle" font-weight="600">Bind immutable input</text>
+<text x="230.0" y="347.0" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Snapshot ID + optional Split revision</text>
+<rect x="480" y="285" width="400" height="88" rx="12" fill="#eaf1fb" stroke="#2463a5" stroke-width="1.3"/>
+<text x="680.0" y="313.0" font-size="18" fill="#132b3c" text-anchor="middle" font-weight="600">Read plan + continuation</text>
+<text x="680.0" y="336.0" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Selection, projection, order / shuffle</text>
+<text x="680.0" y="359.0" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Worker partition and position</text>
+<rect x="970" y="285" width="390" height="88" rx="12" fill="#f0edf9" stroke="#7461a8" stroke-width="1.3"/>
+<text x="1165.0" y="313.0" font-size="18" fill="#132b3c" text-anchor="middle" font-weight="600">Chunk-KV metadata</text>
+<text x="1165.0" y="336.0" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Snapshot, Manifest, Split membership</text>
+<text x="1165.0" y="359.0" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Sample fields and payload locators</text>
+<polyline points="230,202 230,285" fill="none" stroke="#2463a5" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#blue)"/>
+<polyline points="420,329 480,329" fill="none" stroke="#2463a5" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#blue)"/>
+<polyline points="970,313 905,313 905,248 230,248 230,285" fill="none" stroke="#7461a8" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#purple)"/>
+<rect x="40" y="435" width="640" height="210" rx="17" fill="#eaf1fb" stroke="#2463a5" stroke-width="1.3"/>
+<text x="60" y="468" font-size="20" fill="#2463a5" text-anchor="start" font-weight="600">Select a bounded batch</text>
+<rect x="60" y="496" width="600" height="66" rx="12" fill="#eaf1fb" stroke="#2463a5" stroke-width="1.3"/>
+<text x="360.0" y="524.0" font-size="18" fill="#132b3c" text-anchor="middle" font-weight="600">Inspect metadata in bounded windows</text>
+<text x="360.0" y="547.0" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Schema, membership, and selection predicates</text>
+<text x="360" y="608" font-size="17" fill="#2463a5" text-anchor="middle" font-weight="600">Split filter → shuffle / order → worker partition</text>
+<polyline points="680,373 680,407 360,407 360,496" fill="none" stroke="#2463a5" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#blue)"/>
+<rect x="735" y="435" width="625" height="210" rx="17" fill="#f0edf9" stroke="#7461a8" stroke-width="1.3"/>
+<text x="755" y="468" font-size="20" fill="#7461a8" text-anchor="start" font-weight="600">Project the requested fields</text>
+<rect x="755" y="496" width="585" height="98" rx="12" fill="#f0edf9" stroke="#7461a8" stroke-width="1.3"/>
+<text x="1047.5" y="529.0" font-size="18" fill="#132b3c" text-anchor="middle" font-weight="600">Resolve field locators</text>
+<text x="1047.5" y="552.0" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Inline values or completed uploaded fields</text>
+<text x="1047.5" y="575.0" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Immutable upload description + part receipts</text>
+<polyline points="660,529 755,529" fill="none" stroke="#2463a5" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#blue)"/>
+<polyline points="1165,373 1165,435" fill="none" stroke="#7461a8" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#purple)"/>
+<rect x="40" y="745" width="340" height="92" rx="12" fill="#eaf1fb" stroke="#2463a5" stroke-width="1.3"/>
+<text x="210.0" y="786.0" font-size="18" fill="#132b3c" text-anchor="middle" font-weight="600">Inline field</text>
+<text x="210.0" y="809.0" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Value is already in metadata</text>
+<rect x="440" y="745" width="920" height="165" rx="17" fill="#e4f5f1" stroke="#007f78" stroke-width="1.3"/>
+<text x="460" y="778" font-size="20" fill="#007f78" text-anchor="start" font-weight="600">Uploaded field</text>
+<rect x="460" y="806" width="320" height="74" rx="12" fill="#e4f5f1" stroke="#007f78" stroke-width="1.3"/>
+<text x="620.0" y="838.0" font-size="18" fill="#132b3c" text-anchor="middle" font-weight="600">Ordered part receipts</text>
+<text x="620.0" y="861.0" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Lengths, digests, and locations</text>
+<rect x="840" y="806" width="500" height="74" rx="12" fill="#e4f5f1" stroke="#007f78" stroke-width="1.3"/>
+<text x="1090.0" y="838.0" font-size="18" fill="#132b3c" text-anchor="middle" font-weight="600">Chunk client range / stream reads</text>
+<text x="1090.0" y="861.0" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">DiskIO · TCP / RDMA · mirror or EC</text>
+<polyline points="780,843 840,843" fill="none" stroke="#007f78" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#teal)"/>
+<polyline points="930,645 930,694 210,694 210,745" fill="none" stroke="#2463a5" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#blue)"/>
+<polyline points="1165,645 1165,745" fill="none" stroke="#007f78" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#teal)"/>
+<rect x="390" y="980" width="620" height="100" rx="12" fill="#eaf1fb" stroke="#2463a5" stroke-width="1.3"/>
+<text x="700.0" y="1003.0" font-size="21" fill="#132b3c" text-anchor="middle" font-weight="600">Verify and deliver the batch</text>
+<text x="700.0" y="1026.0" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Frame / field integrity and exact lengths</text>
+<text x="700.0" y="1049.0" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">HTTP: header → payload → terminators → EOF</text>
+<text x="700.0" y="1072.0" font-size="14" fill="#526879" text-anchor="middle" font-weight="400">Native: direct RDMA path → retained host buffers</text>
+<polyline points="210,837 210,1030 390,1030" fill="none" stroke="#2463a5" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#blue)"/>
+<polyline points="1090,910 1090,945 700,945 700,980" fill="none" stroke="#007f78" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#teal)"/>
+<rect x="390" y="1130" width="620" height="78" rx="12" fill="#132b3c" stroke="#132b3c" stroke-width="1.3"/>
+<text x="700.0" y="1164.0" font-size="21" fill="#fff" text-anchor="middle" font-weight="600">Application processes the batch</text>
+<text x="700.0" y="1187.0" font-size="14" fill="#c7dce4" text-anchor="middle" font-weight="400">Save the next continuation only after success</text>
+<polyline points="700,1080 700,1130" fill="none" stroke="#2463a5" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#blue)"/>
+<polyline points="1010,1169 1380,1169 1380,230 680,230 680,285" fill="none" stroke="#6d8493" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#gray)" stroke-dasharray="6 5"/>
+<text x="960" y="222" font-size="15" fill="#526879" text-anchor="middle" font-weight="400">Next request uses the saved continuation</text>
+<text x="700" y="1254" font-size="15" fill="#526879" text-anchor="middle" font-weight="400">Each request checks access and deletion state. A continuation replays a batch without a persistent read session.</text>
+<text x="700" y="1280" font-size="15" fill="#526879" text-anchor="middle" font-weight="400">Fetching, EOF, and releasing buffers do not acknowledge application progress.</text>
+<text x="1358" y="1298" font-size="12" fill="#526879" text-anchor="end" font-weight="400">CROWDB</text>
+</g></svg>

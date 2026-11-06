@@ -42,7 +42,7 @@ struct PendingReq
     std::vector<uint8_t> payload;
 };
 
-extern "C" void load_on_complete(uint64_t /*request_id*/, crowdb_rpc_buffer_t /*control*/, crowdb_rpc_buffer_t data,
+extern "C" void load_on_complete(uint64_t /*request_id*/, crowdb_rpc_buffer_t control, crowdb_rpc_buffer_t data,
                                  crowdb_rpc_status status, void *user_data)
 {
     auto *pr = static_cast<PendingReq *>(user_data);
@@ -56,6 +56,7 @@ extern "C" void load_on_complete(uint64_t /*request_id*/, crowdb_rpc_buffer_t /*
     if (data != nullptr) {
         crowdb_rpc_buffer_release(data);
     }
+    crowdb_rpc_buffer_release(control);
     pr->got_response.store(true, std::memory_order_release);
 }
 

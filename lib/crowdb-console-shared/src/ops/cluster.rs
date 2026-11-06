@@ -13,7 +13,7 @@ mod chunk_slots;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crowdb_kv_client::RangeBindingClient;
+use crowdb_paxos_kv_client::RangeBindingClient;
 use crowdb_protocol::common::{HwStatus, NodeValue, RackValue};
 use crowdb_protocol::port::namespace::{assign_process_ports, RuntimeNamespace};
 use crowdb_protocol::ServicePort;
@@ -22,7 +22,8 @@ use crate::clients::http::ServerClient;
 use crate::config::{NodeEntry, RackEntry, ServerEntry, ServiceType};
 use crate::error::{Error, Result};
 use crate::lifecycle::{
-    self, crowdb_kv_server_bin, ChunkdbDeployRequest, DeployRequest, DiskdbDeployRequest, DiskioDeployRequest,
+    self, crowdb_paxos_kv_server_bin, ChunkdbDeployRequest, DeployRequest, DiskdbDeployRequest,
+    DiskioDeployRequest,
 };
 use crate::ops::hardware::{self, AddDiskInput};
 use crate::ops::OpContext;
@@ -1037,7 +1038,6 @@ async fn provision_diskdb_topology(
 }
 
 struct DiskdbPorts {
-    listen: Vec<u16>,
     http: Vec<u16>,
     rpc: Vec<u16>,
 }
@@ -1047,7 +1047,6 @@ fn alloc_diskdb_ports(workspace: &std::path::Path, node_count: usize) -> Result<
     let count = u16::try_from(node_count).unwrap_or(u16::MAX);
     let alloc = |service| alloc_workspace_ports(workspace, service, 0, count);
     Ok(DiskdbPorts {
-        listen: alloc(ServicePort::DiskdbListen)?,
         http: alloc(ServicePort::DiskdbHttp)?,
         rpc: alloc(ServicePort::DiskdbRpc)?,
     })
@@ -1084,7 +1083,6 @@ async fn deploy_diskdb_instances(
                 keepalive_interval_secs: config.keepalive_interval_secs,
                 free_batch_enabled: config.free_batch_enabled,
                 free_flush_max_batch: config.free_flush_max_batch,
-                listen_port: ports.listen[index],
                 http_port: ports.http[index],
                 rpc_port: ports.rpc[index],
                 kv_server_mgmt_seeds: seeds.clone(),
@@ -1118,7 +1116,7 @@ async fn deploy_diskdb_instances(
 }
 
 /// Deploy a local N-node KV cluster on `127.0.0.1`: creates rack 1,
-/// nodes 1..=N in the config, forks a `crowdb-kv-server` on each node
+/// nodes 1..=N in the config, forks a `crowdb-paxos-kv-server` on each node
 /// with auto-allocated ports, then bootstraps group 0 via [`init`].
 ///
 /// The `workspace_dir` is used as the runtime root for the spawned
@@ -1155,7 +1153,7 @@ pub struct KvDeployTunables {
 }
 
 /// Deploy a local N-node KV cluster on `127.0.0.1`: creates rack 1,
-/// nodes 1..=N in the config, forks a `crowdb-kv-server` on each node
+/// nodes 1..=N in the config, forks a `crowdb-paxos-kv-server` on each node
 /// with auto-allocated ports, then bootstraps group 0 via [`init`].
 ///
 /// The `workspace_dir` is used as the runtime root for the spawned
@@ -1165,7 +1163,7 @@ pub struct KvDeployTunables {
 /// `--peer-pool-size`, etc.). `None` uses server defaults.
 ///
 /// # Errors
-/// Returns [`Error::NotFound`] if the `crowdb-kv-server` binary cannot
+/// Returns [`Error::NotFound`] if the `crowdb-paxos-kv-server` binary cannot
 /// be located. Returns [`Error::Io`] on spawn/readiness failures.
 pub async fn local_deploy(
     ctx: &OpContext,
@@ -1224,9 +1222,9 @@ async fn prepare_local_deploy_with_layout(
         });
     }
 
-    let bin = crowdb_kv_server_bin().ok_or_else(|| Error::NotFound {
+    let bin = crowdb_paxos_kv_server_bin().ok_or_else(|| Error::NotFound {
         kind: "binary".into(),
-        id: "crowdb-kv-server".into(),
+        id: "crowdb-paxos-kv-server".into(),
     })?;
     if !bin.exists() {
         return Err(Error::NotFound {
@@ -1342,7 +1340,7 @@ fn write_rack_and_nodes(ctx: &OpContext, rack_id: u64, node_ids: &[u64], distinc
     }
 }
 
-/// Phase 2: fork a `crowdb-kv-server` on each node (skips nodes that
+/// Phase 2: fork a `crowdb-paxos-kv-server` on each node (skips nodes that
 /// already have a deployed server).
 ///
 /// # Errors
@@ -1357,8 +1355,8 @@ async fn deploy_servers(
     distinct_racks: bool,
 ) -> Result<()> {
     let n = u16::try_from(node_ids.len()).unwrap_or(u16::MAX);
-    let rest_ports = alloc_workspace_ports(workspace, ServicePort::KvServerMgmt, 0, n)?;
-    let rpc_ports = alloc_workspace_ports(workspace, ServicePort::KvServerListen, 0, n)?;
+    let rest_ports = alloc_workspace_ports(workspace, ServicePort::PaxosKvServerMgmt, 0, n)?;
+    let rpc_ports = alloc_workspace_ports(workspace, ServicePort::PaxosKvServerRpc, 0, n)?;
     for (i, nid) in node_ids.iter().enumerate() {
         let rack_id = if distinct_racks { *nid } else { rack_id };
         let rest_port = rest_ports[i];

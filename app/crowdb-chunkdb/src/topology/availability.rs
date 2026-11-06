@@ -10,7 +10,7 @@ use std::{
 };
 
 pub(super) async fn read(
-    service: &crowdb_kv_client::ServiceRegistryClient,
+    service: &crowdb_paxos_kv_client::ServiceRegistryClient,
 ) -> Option<Vec<(u64, InstanceValue)>> {
     match service.read_all_instance_observations("diskio").await {
         Ok(instances) => Some(instances),
@@ -53,7 +53,7 @@ pub(super) fn deadlines(
             let deadline = if extra.owned_dg_ids.contains(&group.dg_id) {
                 instance
                     .last_heartbeat_ms
-                    .saturating_add(crowdb_kv_client::SERVICE_INSTANCE_TTL_MS)
+                    .saturating_add(crowdb_paxos_kv_client::SERVICE_INSTANCE_TTL_MS)
             } else {
                 0
             };

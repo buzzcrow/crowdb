@@ -5,7 +5,7 @@
 
 use axum::{extract::State, http::StatusCode, Json};
 use crowdb_console_shared::deployment::{registry, PreparedBootstrap, CLUSTER_KEY};
-use crowdb_kv_client::{GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{GetOutcome, ReadMode};
 use crowdb_protocol::mgmt::cluster::ClusterTargetIdentity;
 
 use crate::{

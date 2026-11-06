@@ -23,6 +23,7 @@ mod routing;
 mod snapshot;
 
 mod slot_map;
+mod slot_map_recovery;
 mod slot_map_validation;
 
 mod handoff_fixture;

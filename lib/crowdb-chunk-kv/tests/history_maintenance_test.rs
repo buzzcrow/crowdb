@@ -22,6 +22,7 @@ struct TestPartition {
     store: Arc<MemoryStreamStore>,
     journal: Arc<dyn PartitionJournal>,
     config: PartitionConfig,
+    tree: Arc<MemoryPartitionTree>,
 }
 
 impl TestPartition {
@@ -60,6 +61,7 @@ impl TestPartition {
             store,
             journal,
             config,
+            tree,
         }
     }
 
@@ -263,4 +265,43 @@ async fn one_retired_record_per_pass_keeps_same_generation_maintenance_progressi
     }
     fixture.drain().await;
     assert!(fixture.store.chunk_records_for_tests(NAME).await.unwrap().len() < before - 2);
+}
+
+#[tokio::test]
+async fn serving_maintenance_drives_tree_backlog_without_advancing_wal_or_checkpoint() {
+    let fixture = TestPartition::open().await;
+    fixture.tree.configure_collection_for_tests(2, false);
+    let before = fixture.partition.snapshot();
+    assert!(fixture.partition.maintain_serving_metadata(EPOCH).await.unwrap());
+    assert!(!fixture.partition.maintain_serving_metadata(EPOCH).await.unwrap());
+    assert_eq!(fixture.tree.collection_calls_for_tests(), 2);
+    let after = fixture.partition.snapshot();
+    assert_eq!(before.applied_seq, after.applied_seq);
+    assert_eq!(before.journal_durable_seq, after.journal_durable_seq);
+    assert_eq!(fixture.partition.metrics().snapshot().checkpoints, 0);
+}
+
+#[tokio::test]
+async fn collection_failure_preserves_retry_and_transition_pin_suppresses_collection() {
+    let fixture = TestPartition::open().await;
+    fixture.write(1).await;
+    fixture.tree.configure_collection_for_tests(2, true);
+    assert!(matches!(
+        fixture.partition.maintain_serving_metadata(EPOCH).await,
+        Err(ChunkKvError::MaintenanceDegraded(_))
+    ));
+    fixture.tree.configure_collection_for_tests(2, false);
+    let transition = TransitionId { high: 70, low: 71 };
+    let checkpoint = fixture
+        .partition
+        .checkpoint_with_pin(EPOCH, transition)
+        .await
+        .unwrap();
+    assert_ne!(checkpoint.root_manifest_generation, 0);
+    assert!(!fixture.partition.maintain_serving_metadata(EPOCH).await.unwrap());
+    assert_eq!(fixture.tree.collection_calls_for_tests(), 1);
+    fixture.partition.release_generation_pin(transition).unwrap();
+    assert!(fixture.partition.maintain_serving_metadata(EPOCH).await.unwrap());
+    assert!(!fixture.partition.maintain_serving_metadata(EPOCH).await.unwrap());
+    assert_eq!(fixture.tree.collection_calls_for_tests(), 3);
 }

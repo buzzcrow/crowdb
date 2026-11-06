@@ -6,6 +6,7 @@ mod recovery;
 mod state;
 mod wal;
 
+use crowdb_protocol::port::ports::WEB_BASE;
 use http::*;
 use recovery::{restart_recovery, GroupSpec, REPLAY_PUTS};
 use serde_json::json;
@@ -27,7 +28,7 @@ async fn setup_cluster() -> Cluster {
     if ips.len() > 1 {
         return setup_remote_cluster(client, &ips).await;
     }
-    let base = format!("http://{}:9090", ips[0]);
+    let base = format!("http://{}:{WEB_BASE}", ips[0]);
     create_rack(&client, &base, 1).await;
     create_node(&client, &base, 1, 1, "127.0.0.1").await;
     let (status, body) = json_post(
@@ -59,7 +60,7 @@ async fn setup_remote_cluster(client: reqwest::Client, ips: &[String]) -> Cluste
         .iter()
         .map(|data| PathBuf::from(data.as_str().unwrap()).join("kv/waldata"))
         .collect();
-    let base = format!("http://{}:9090", ips[count]);
+    let base = format!("http://{}:{WEB_BASE}", ips[count]);
     create_rack(&client, &base, 1).await;
     if count > 3 {
         create_rack(&client, &base, 2).await;

@@ -11,7 +11,7 @@ use crowdb_chunk_stream::{
     ChunkStream, StreamChunkStore, StreamConfig, StreamMetadataStore, StreamName, StreamPurpose,
     StreamRecord, StreamRecordState, StreamRegistry,
 };
-use crowdb_tree_ffi::{ChunkPageStoreOptions, ChunkRootCatalog, PageStore};
+use crowdb_tree_ffi::chunk::test_util::TestChunkBackend;
 
 #[tokio::test]
 async fn interrupted_bootstrap_replays_wal_before_the_first_tree_checkpoint() {
@@ -26,19 +26,8 @@ async fn interrupted_bootstrap_replays_wal_before_the_first_tree_checkpoint() {
         };
         let store = Arc::new(MemoryStreamStore::new(4096));
         let stream = create_stream(name, &store).await;
-        let catalog = Arc::new(ChunkRootCatalog::open_memory(4).unwrap());
-        let options = ChunkPageStoreOptions {
-            tree_id: identity.low,
-            owner_epoch: 4,
-            open_generation: 0,
-            pack_bytes: 4096,
-            iu_size: 1,
-            max_concurrent_packs: 2,
-            max_chunk_bytes: 0,
-            mirror_copies: 0,
-            materialization_bytes_per_pass: 4096,
-        };
-        let pages = Arc::new(PageStore::open_chunk(options, catalog.clone(), None).unwrap());
+        let mut backend = TestChunkBackend::new(identity.low, 4).unwrap();
+        let pages = backend.page_store(0).unwrap();
         let range = PartitionRange {
             start: Some(Vec::new()),
             end: None,
@@ -49,7 +38,7 @@ async fn interrupted_bootstrap_replays_wal_before_the_first_tree_checkpoint() {
             4,
             PartitionConfig::default(),
             identity.low,
-            crowdb_tree_ffi::Config::default(),
+            backend.config(),
             pages.clone(),
             stream,
         )
@@ -65,17 +54,18 @@ async fn interrupted_bootstrap_replays_wal_before_the_first_tree_checkpoint() {
             pages.chunk_manifest_generation(),
             Ok(0) | Err(crowdb_tree_ffi::CtError::NotFound)
         ));
-        drop(partition);
+        partition.close().await.unwrap();
         drop(pages);
         let stream = open_stream(name, &store).await;
-        let pages = Arc::new(PageStore::open_chunk(options, catalog, None).unwrap());
+        backend.next_writer().unwrap();
+        let pages = backend.page_store(0).unwrap();
         let recovered = Partition::recover_native_latest_prepared_assignment(
             identity,
             range,
             4,
             identity.low,
             PartitionConfig::default(),
-            crowdb_tree_ffi::Config::default(),
+            backend.config(),
             pages.clone(),
             stream,
         )
@@ -100,6 +90,8 @@ async fn interrupted_bootstrap_replays_wal_before_the_first_tree_checkpoint() {
         assert!(recovered.get(4, b"", None).await.unwrap().is_none());
         recovered.checkpoint(4).await.unwrap();
         assert!(pages.chunk_manifest_generation().unwrap() > 0);
+        recovered.suspend_for_shutdown(4).await.unwrap();
+        recovered.close().await.unwrap();
     }
 }
 
@@ -155,4 +147,31 @@ async fn open_stream(name: StreamName, store: &Arc<MemoryStreamStore>) -> ChunkS
     )
     .await
     .unwrap()
+}
+
+#[tokio::test]
+async fn close_waits_for_the_last_partition_owner_and_releases_the_worker_tree() {
+    let store = Arc::new(MemoryStreamStore::new(4096));
+    let name = StreamName { high: 3, low: 4 };
+    let stream = create_stream(name, &store).await;
+    let tree = Arc::new(crowdb_chunk_kv::memory::MemoryPartitionTree::with_tree_id(7));
+    let weak_tree = Arc::downgrade(&tree);
+    let partition = Partition::open(
+        PartitionId { high: 3, low: 4 },
+        PartitionRange::default(),
+        4,
+        PartitionConfig::default(),
+        tree,
+        Arc::new(crowdb_chunk_kv::StreamPartitionJournal::new(stream, name).unwrap()),
+    )
+    .unwrap();
+    partition.suspend_for_shutdown(4).await.unwrap();
+    let other_owner = partition.clone();
+    let completion = partition.close();
+    futures::pin_mut!(completion);
+    assert!(futures::poll!(&mut completion).is_pending());
+    assert!(weak_tree.upgrade().is_some());
+    drop(other_owner);
+    completion.await.unwrap();
+    assert!(weak_tree.upgrade().is_none());
 }

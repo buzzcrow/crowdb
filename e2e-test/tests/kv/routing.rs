@@ -2,13 +2,13 @@
 // Licensed under the Apache License, Version 2.0.
 
 use crate::common::management::{addresses, origin};
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{ClientConfig, GetOutcome, PaxosKvClient, ReadMode};
 
 #[tokio::test]
 #[ignore = "requires three release-container nodes, each hosting stores one and two"]
 async fn multi_store_isolation_and_recovery() {
     let seeds = addresses(3).iter().map(|ip| origin(ip)).collect();
-    let client = CrowdbKvClient::new(ClientConfig::new(seeds));
+    let client = PaxosKvClient::new(ClientConfig::new(seeds));
     if std::env::var("CROWDB_E2E_PHASE").unwrap() == "write" {
         for (store, key, value) in [(1, b"ms-a", b"val-a"), (2, b"ms-b", b"val-b")] {
             client.put(store, 10, key, value, None).await.unwrap();

@@ -11,7 +11,7 @@ use crowdb_console_shared::{
     },
     ConsoleConfig,
 };
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{ClientConfig, GetOutcome, PaxosKvClient, ReadMode};
 use crowdb_protocol::mgmt::node::NodeBinding;
 use ssh_key::PublicKey;
 use std::{path::Path, time::Duration};
@@ -31,7 +31,7 @@ async fn authority(
         })
         .ok_or("confirmed recovery requires authority contacts")?;
     tokio::time::timeout(Duration::from_secs(3), async {
-        let client = CrowdbKvClient::new(ClientConfig::new(seeds));
+        let client = PaxosKvClient::new(ClientConfig::new(seeds));
         let GetOutcome::Found { value, .. } = client
             .get(
                 0,

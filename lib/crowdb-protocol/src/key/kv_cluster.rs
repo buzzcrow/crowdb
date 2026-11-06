@@ -7,9 +7,6 @@
 //! structure (stores, groups, replicas) stored in group 0 under
 //! `/kv/...` text-path keys. They implement [`TextKey`] only (no
 //! [`BinaryKey`] — these are group-0 only).
-//!
-//! See `doc/design/kv/design-crowdb-kv-group0.md` §3.1 for the key
-//! layout.
 
 use super::encoding::{
     check_path_exact, decode_path_u64, encode_path_header, encode_path_u64, KeyError, TextKey,

@@ -23,7 +23,7 @@ crowdb-chunk-client = { path = "../crowdb-chunk-client" }
 crowdb-common = { workspace = true }
 crowdb-access-multipart = { path = "../crowdb-access-multipart" }
 crowdb-chunk-kv-client = { path = "../crowdb-chunk-kv-client" }
-crowdb-kv-client = { path = "../crowdb-kv-client" }
+crowdb-paxos-kv-client = { path = "../crowdb-paxos-kv-client" }
 crowdb-protocol = { path = "../crowdb-protocol" }
 crowdb-rpc-ffi = { path = "../crowdb-rpc/ffi" }
 flatbuffers = { workspace = true }

@@ -18,7 +18,7 @@ path = "src/main.rs"
 futures = "0.3"
 uuid = { version = "1", features = ["v4"] }
 crowdb-console-shared = { path = "../../lib/crowdb-console-shared" }
-crowdb-kv-client = { path = "../../lib/crowdb-kv-client" }
+crowdb-paxos-kv-client = { path = "../../lib/crowdb-paxos-kv-client" }
 crowdb-common = { path = "../../lib/crowdb-common/rust" }
 crowdb-protocol = { path = "../../lib/crowdb-protocol" }
 crowdb-rpc-ffi = { path = "../../lib/crowdb-rpc/ffi" }
@@ -27,7 +27,7 @@ crowdb-chunkdb-client = { path = "../../lib/crowdb-chunkdb-client" }
 crowdb-chunk-client = { path = "../../lib/crowdb-chunk-client" }
 flatbuffers = { workspace = true }
 clap = { version = "4", features = ["derive", "env"] }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "net", "process"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 hex = "0.4"
@@ -84,3 +84,7 @@ path = "tests/cluster_lifecycle_test.rs"
 [[test]]
 name = "cluster_workloads_test"
 path = "tests/cluster_workloads_test.rs"
+
+[[test]]
+name = "kv_bench_test"
+path = "tests/kv_bench_test.rs"

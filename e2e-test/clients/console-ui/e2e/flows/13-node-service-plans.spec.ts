@@ -23,7 +23,7 @@ async function occupyDiskdbPort(request: APIRequestContext) {
   const diskdb = await dependency.json();
   const defaults = await json(request, '/api/deployment-defaults?node_id=1');
   const deployed = await request.post('/api/nodes/1/services/deploy', { data: {
-    ...defaults.diskio, kind: 'diskio', instance_id: '99', rpc_port: 7102, disk_group_id: 1,
+    ...defaults.diskio, kind: 'diskio', instance_id: '99', rpc_port: 7100, disk_group_id: 1,
   } });
   expect(deployed.status(), await deployed.text()).toBe(201);
   const guard = await deployed.json();
@@ -100,7 +100,7 @@ test('native plans: fixed ports isolate three nodes and failed DiskDB retries pr
   expect(servers).toHaveLength(3);
   expect(new Set(servers.map((row: { endpoint: string; rpc_url: string }) => row.endpoint || row.rpc_url)).size).toBe(3);
   for (const server of servers) {
-    expect(server.endpoint || server.rpc_url).toMatch(/:7102$/);
+    expect(server.endpoint || server.rpc_url).toMatch(/:7100$/);
     expect(server.pid_node_id).toBe(server.node_id);
     expect(await nativeProcessAlive(server.node_id - 1, server.pid)).toBe(true);
   }

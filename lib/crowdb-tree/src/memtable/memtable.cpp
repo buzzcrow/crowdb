@@ -5,6 +5,8 @@
 
 #include "crowdb-tree/memtable/memtable.h"
 
+#include "crowdb-tree/external_allocation.h"
+
 #include <algorithm>
 #include <cstring>
 #include <utility>
@@ -21,6 +23,25 @@ buffer buf_of(Slice s)
         std::memcpy(b.data(), s.data(), s.size());
     }
     return b;
+}
+
+AllocationLease retain_payload(buffer &payload, const std::shared_ptr<AllocationBudget> &budget)
+{
+    if (!budget) {
+        return {};
+    }
+    size_t capacity = payload.owned() ? payload.capacity() : payload.size();
+    if (payload.inlined() || (!payload.owned() && capacity <= buffer::kInlineCap)) {
+        capacity = 0;
+    }
+    AllocationLease credit(budget, capacity, AllocationKind::kPayload);
+    // Legacy borrowed/external buffers expose no allocation identity/capacity.
+    // A budgeted source makes a controlled copy instead of treating slice
+    // length as the physical size of an unknown retained allocation.
+    if (!payload.owned()) {
+        payload = payload.clone();
+    }
+    return credit;
 }
 
 // Materialize a contiguous [header][value] cell from a CellVersion (R30 split
@@ -50,8 +71,12 @@ bool MemTable::upsert(Slice key, uint64_t slot, Slice cell_payload)
     return upsert(key, slot, buf_of(cell_payload));
 }
 
-bool MemTable::upsert(Slice key, uint64_t slot, buffer &&cell_payload, uint64_t bound, MutationStats *stats)
+bool MemTable::upsert(Slice key, uint64_t slot, buffer &&cell_payload, uint64_t bound, MutationStats *stats,
+                      std::shared_ptr<AllocationBudget> budget)
 {
+    if (!budget) {
+        budget = list_.budget();
+    }
     if (stats != nullptr) {
         stats->admission = &writers_;
     }
@@ -61,8 +86,10 @@ bool MemTable::upsert(Slice key, uint64_t slot, buffer &&cell_payload, uint64_t 
     CellView cv{cell_payload.slice()};
     uint64_t entry_slot = cv.valid() ? cv.slot() : slot;
     uint8_t  flags      = cv.valid() ? cv.flags() : 0;
-    auto ver = std::make_shared<CellVersion>(std::move(cell_payload), entry_slot, flags, epoch_->memtable_allocation());
-    if (!list_.upsert(key, std::move(ver), bound, stats)) {
+    auto     credit     = retain_payload(cell_payload, budget);
+    auto     ver        = CellVersion::create(std::move(cell_payload), entry_slot, flags, epoch_->memtable_allocation(),
+                                              std::move(credit), budget);
+    if (!list_.upsert(key, std::move(ver), bound, stats, std::move(budget))) {
         return false;
     }
     update_slot_range(entry_slot);
@@ -70,13 +97,40 @@ bool MemTable::upsert(Slice key, uint64_t slot, buffer &&cell_payload, uint64_t 
 }
 
 bool MemTable::upsert_external(Slice key, uint64_t slot, uint8_t flags, buffer &&value, uint64_t bound,
-                               MutationStats *stats)
+                               MutationStats *stats, std::shared_ptr<AllocationBudget> budget)
 {
+    if (!budget) {
+        budget = list_.budget();
+    }
     if (stats != nullptr) {
         stats->admission = &writers_;
     }
     if (slot <= durable_floor_.load(std::memory_order_relaxed) && !allow_old_slots_.load(std::memory_order_relaxed)) {
         return false;
+    }
+    const auto *allocation = value.external_allocation();
+    if (budget && (allocation == nullptr || !allocation->charged_to(budget))) {
+        if (value.size() > std::numeric_limits<size_t>::max() - kCellHeaderSize) {
+            throw std::bad_alloc();
+        }
+        const auto      capacity = value.size() + kCellHeaderSize;
+        AllocationLease credit(budget, capacity <= buffer::kInlineCap ? 0 : capacity, AllocationKind::kPayload);
+        auto            encoded = buffer::alloc(value.size(), kCellHeaderSize);
+        for (size_t i = 0; i < sizeof(slot); ++i) {
+            encoded.data()[i] = static_cast<uint8_t>(slot >> (8 * i));
+        }
+        encoded.data()[sizeof(slot)] = flags;
+        if (!value.empty()) {
+            std::memcpy(encoded.data() + kCellHeaderSize, value.data(), value.size());
+        }
+        value    = {};
+        auto ver = CellVersion::create(std::move(encoded), slot, flags, epoch_->memtable_allocation(),
+                                       std::move(credit), budget);
+        if (!list_.upsert(key, std::move(ver), bound, stats, std::move(budget))) {
+            return false;
+        }
+        update_slot_range(slot);
+        return true;
     }
     // upsert_external stores the raw value (no 9-byte cell header); the
     // header is reconstructed from slot/flags at read time. Tag non-kExternal
@@ -91,8 +145,8 @@ bool MemTable::upsert_external(Slice key, uint64_t slot, uint8_t flags, buffer &
             value = buffer::wrap_external(nullptr, 0, nullptr, nullptr);
         }
     }
-    auto ver = std::make_shared<CellVersion>(std::move(value), slot, flags, epoch_->memtable_allocation());
-    if (!list_.upsert(key, std::move(ver), bound, stats)) {
+    auto ver = CellVersion::create(std::move(value), slot, flags, epoch_->memtable_allocation(), {}, budget);
+    if (!list_.upsert(key, std::move(ver), bound, stats, std::move(budget))) {
         return false;
     }
     update_slot_range(slot);
@@ -109,7 +163,7 @@ void MemTable::set_durable_floor(uint64_t slot)
 
 std::vector<mem_entry> MemTable::snapshot(uint64_t frontier) const
 {
-    auto                   guard = epoch_->enter();
+    auto                   guard = read_guard();
     std::vector<mem_entry> out;
     auto                   cur = list_.prefix_cursor(frontier);
     while (cur.valid()) {

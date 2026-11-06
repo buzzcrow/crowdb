@@ -15,7 +15,7 @@ use crowdb_chunkdb::{
     storage::{range_retirement::RetiredByteRange, ChunkStore},
 };
 use crowdb_common::ec::EcScheme;
-use crowdb_kv_client::{ChunkSlotMapClient, CrowdbKvClient};
+use crowdb_paxos_kv_client::{ChunkSlotMapClient, PaxosKvClient};
 use crowdb_protocol::chunkdb::rpc::{Chunk, ChunkState, ChunkType, Location};
 use md5::{Digest, Md5};
 use std::sync::Arc;
@@ -62,7 +62,7 @@ fn large_policy() -> LargeWritePolicy {
 }
 
 async fn chunk_store(stack: &TestNativeStorage) -> ChunkStore {
-    let kv = Arc::new(CrowdbKvClient::new(crowdb_kv_client::ClientConfig::new(
+    let kv = Arc::new(PaxosKvClient::new(crowdb_paxos_kv_client::ClientConfig::new(
         stack.seeds.clone(),
     )));
     let bindings = BindingCache::new();

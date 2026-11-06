@@ -14,11 +14,17 @@ namespace crowdb::tree
 
 struct RangeRebuildStats
 {
+    // Logical keys enumerated after route/range selection. Skipped subtrees
+    // and binary-search-elided leaf records are not examined or filtered.
     uint64_t entries_examined = 0;
     uint64_t entries_emitted  = 0;
     uint64_t entries_filtered = 0;
-    uint64_t pages_reused     = 0;
-    uint64_t pages_rebuilt    = 0;
+    // Shared physical storage only; independently paid frame copies count as
+    // rebuilt even when their encoded bytes can be copied unchanged.
+    uint64_t pages_reused  = 0;
+    uint64_t pages_rebuilt = 0;
+    // Maximal child roots skipped by routing, including one root for an empty
+    // selection. Descendants are not visited just to count them.
     uint64_t subtrees_skipped = 0;
 };
 

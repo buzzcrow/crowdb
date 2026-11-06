@@ -1,6 +1,8 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+use crowdb_protocol::port::ports::{ACCESS_SERVER_HTTP_BASE, ACCESS_SERVER_ICEBERG_HTTP_BASE};
+
 fn verify(protocol: &str, port: &str) {
     let root = std::path::PathBuf::from(std::env::var("CROWDB_E2E_ARTIFACTS").unwrap());
     let result: serde_json::Value =
@@ -19,7 +21,10 @@ fn verify(protocol: &str, port: &str) {
 fn fixed_s3_listener_recovers_after_explicit_termination() {
     verify(
         "s3",
-        &format!("{}:9091", crate::common::management::addresses(1)[0]),
+        &format!(
+            "{}:{ACCESS_SERVER_HTTP_BASE}",
+            crate::common::management::addresses(1)[0]
+        ),
     );
 }
 
@@ -28,6 +33,9 @@ fn fixed_s3_listener_recovers_after_explicit_termination() {
 fn fixed_iceberg_listener_recovers_after_explicit_termination() {
     verify(
         "iceberg",
-        &format!("{}:9092", crate::common::management::addresses(1)[0]),
+        &format!(
+            "{}:{ACCESS_SERVER_ICEBERG_HTTP_BASE}",
+            crate::common::management::addresses(1)[0]
+        ),
     );
 }

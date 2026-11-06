@@ -57,7 +57,6 @@ DiskioServer::DiskioServer(std::shared_ptr<DiskSet> disk_set, std::shared_ptr<cr
                            uint64_t max_write_request_age_ms, uint64_t max_clock_skew_ms)
     : disk_set_(std::move(disk_set)),
       transport_(std::move(transport)),
-      aligned_writer_(),
       read_latency_(&engine_read_latency_metric()),
       write_latency_(&engine_write_latency_metric()),
       fsync_latency_(&engine_fsync_latency_metric()),
@@ -69,7 +68,7 @@ DiskioServer::DiskioServer(std::shared_ptr<DiskSet> disk_set, std::shared_ptr<cr
 // Build a diskio response control buffer (flatbuffer).
 crowdb::rpc::Buffer *DiskioServer::build_response_ctrl(crowdb::rpc::BufferPool *pool, uint64_t request_id,
                                                        uint64_t rpc_create_nano, int16_t ret_code, uint16_t msg_type,
-                                                       bool sync_completed)
+                                                       bool sync_completed, bool read_age_checked)
 {
     auto                           fb_ret = static_cast<dproto::FBDiskIoRetCode>(ret_code);
     flatbuffers::FlatBufferBuilder fbb(64);
@@ -78,7 +77,7 @@ crowdb::rpc::Buffer *DiskioServer::build_response_ctrl(crowdb::rpc::BufferPool *
         fbb.Finish(off);
     }
     else if (msg_type == static_cast<uint16_t>(rproto::FBMsgType_EDiskReadResponse)) {
-        auto off = dproto::CreateFBDiskReadResponse(fbb, request_id, rpc_create_nano, fb_ret);
+        auto off = dproto::CreateFBDiskReadResponse(fbb, request_id, rpc_create_nano, fb_ret, read_age_checked);
         fbb.Finish(off);
     }
     else { // fsync response
@@ -103,16 +102,19 @@ void DiskioServer::send_error_response(crowdb::rpc::Connection *conn, uint64_t r
 void DiskioServer::send_response(const std::shared_ptr<crowdb::rpc::Transport>  &transport,
                                  const std::shared_ptr<crowdb::rpc::Connection> &connection, uint64_t request_id,
                                  uint64_t created, uint16_t type, int16_t code, crowdb::rpc::Buffer *data,
-                                 bool sync_completed)
+                                 bool sync_completed, bool read_age_checked)
 {
     const auto release = [](crowdb::rpc::Buffer *buffer) {
-        if (buffer != nullptr)
+        if (buffer != nullptr) {
             buffer->release();
+        }
     };
     std::unique_ptr<crowdb::rpc::Buffer, decltype(release)> payload(data, release);
-    if (connection == nullptr || !connection->is_open())
+    if (connection == nullptr || !connection->is_open()) {
         return;
-    auto *control = build_response_ctrl(connection->pool(), request_id, created, code, type, sync_completed);
+    }
+    auto *control =
+        build_response_ctrl(connection->pool(), request_id, created, code, type, sync_completed, read_age_checked);
     if (control == nullptr) {
         connection->close();
         return;

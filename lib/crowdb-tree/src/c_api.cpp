@@ -10,7 +10,10 @@
 // hand them back to ct_free_buf regardless of allocator details.
 #include "crowdb-tree/c_api.h"
 
+#include "btree/tree_core_access.h"
+#include "c_api_future_internal.h"
 #include "c_api_internal.h"
+#include "c_api_owned_budget.h"
 #include "crowdb-common/log.h"
 #include "crowdb-tree/backend/async_page_store.h"
 #include "crowdb-tree/backend/block_page_store.h"
@@ -20,6 +23,9 @@
 #include "crowdb-tree/btree/range_rebuild.h"
 #include "crowdb-tree/crowdb-tree.h"
 #include "crowdb-tree/snapshot/snapshot_io.h"
+#include "runtime/tree_runtime_c_api.h"
+#include "runtime/tree_tuning_c_api.h"
+#include "snapshot/published_snapshot_view.h"
 #ifdef CROWDB_HAVE_LIBURING
 #    include "crowdb-common/diskio_uring.h"
 #endif
@@ -67,7 +73,7 @@ ct_buf make_buf(const void *data, size_t len)
 // §5's zero-copy fast path). Only for a ct_buf whose
 // backing memory the caller separately keeps alive for at least as long as the
 // buffer is in use (ct_future_poll's kGet case: the ct_future_impl's own
-// EpochManager::Guard). The caller must NOT pass this to ct_free_buf.
+// GetView allocation owner). The caller must NOT pass this to ct_free_buf.
 ct_buf make_borrowed_buf(const void *data, size_t len)
 {
     ct_buf b;
@@ -156,21 +162,18 @@ struct CompletionSignal
 
 struct ct_tree
 {
-    std::unique_ptr<PageStore>        store; // null for pure in-memory engine
-    std::shared_ptr<PageStoreBundle>  injected_store;
-    std::unique_ptr<Crowdbtree>       tree;
+    // The bundle owns async_store, then uring, then store through reverse
+    // member destruction, and captured snapshot windows share its lifetime.
+    std::shared_ptr<PageStoreBundle>  backend;
     std::shared_ptr<CompletionSignal> completion = std::make_shared<CompletionSignal>();
-#ifdef CROWDB_HAVE_LIBURING
-    // Both null for an in-memory tree, or if opening the async twin failed
-    // (see ct_open) -- get_async/flush_async/snapshot_async then fall back
-    // to completing synchronously. Declared so `uring`
-    // outlives `async_store` (async_store is non-owning re: uring,
-    // mirroring Config' own comment) and both outlive `tree`, which is
-    // what actually calls into them.
-    std::unique_ptr<crowdb::common::DiskIOUring> uring;
-    std::unique_ptr<AsyncPageStore>              async_store;
-#endif
+    std::unique_ptr<Crowdbtree>       tree;
 };
+
+static std::shared_ptr<ct_future_impl> make_tree_future(ct_tree *tree)
+{
+    auto *core = TreeCoreAccess::get(*tree->tree);
+    return make_ct_future(core != nullptr ? core->binding()->lifecycle_budget() : nullptr);
+}
 
 struct ct_uring
 {
@@ -192,33 +195,6 @@ struct ct_uring
 // cancel-and-free: it never has to actually reach into
 // the reactor to stop anything, and never risks a dangling ct_future_impl*
 // if the I/O completes after the caller has already abandoned the future.
-struct ct_future_impl
-{
-    enum class Kind : std::uint8_t { kGet, kFlush, kSnapshot, kScan };
-    Kind kind = Kind::kGet;
-    // Written once by the completion callback (release), read once by the
-    // first ct_future_poll that observes it (acquire) -- that acquire/
-    // release pair is the only synchronization the fields below need,
-    // since there is exactly one writer-then-reader handoff per future.
-    std::atomic<bool> done{false};
-    ct_status         status = static_cast<ct_status>(Code::kOk);
-    // kGet only. May hold a live EpochManager::Guard borrowing a resident
-    // frame's bytes (zero-copy fast path,
-    // ct_future_poll deliberately does *not* delete the handle for a kGet
-    // future (see its updated doc comment in c_api.h); the caller must
-    // always follow up with ct_future_free once done reading out_value.
-    GetView  get_result;
-    uint64_t slot = 0; // kSnapshot only (last_applied_slot)
-    // kScan only: packed record buffer (same format ct_scan produces),
-    // received directly from the engine via ScanPackedBuf (R57: zero-copy
-    // staging — no re-pack loop, no make_buf). Ownership is transferred
-    // to the caller via release() in ct_future_poll.
-    ScanPackedBuf scan_packed;
-    uint64_t      scan_count     = 0;
-    bool          scan_truncated = false;
-};
-
-using ct_future_handle = std::shared_ptr<ct_future_impl>;
 
 struct ct_view
 {
@@ -229,11 +205,6 @@ struct ct_iter
 {
     std::shared_ptr<Snapshot> snap; // keep the view alive
     size_t                    pos = 0;
-};
-
-struct ct_export
-{
-    std::unique_ptr<SnapshotExport> exp;
 };
 
 struct ct_import
@@ -283,14 +254,25 @@ void ct_page_store_free(ct_page_store *store)
     delete store;
 }
 
-ct_status ct_open(const ct_options *opt, ct_tree **out)
-{
+static ct_status open_configured(const ct_options *opt, ct_runtime *runtime, const ct_tree_runtime_options *binding,
+                                 ct_tree **out, uint64_t migration_generation, CApiMigration migrate)
+try {
     if (opt == nullptr || out == nullptr) {
         return static_cast<ct_status>(Code::kInvalidArgument);
     }
     auto h = std::make_unique<ct_tree>();
 
     Config o;
+    if (runtime != nullptr || binding != nullptr) {
+        auto status = configure_tree_runtime(runtime, binding, &o);
+        if (!status.ok()) {
+            return to_status(status);
+        }
+    }
+    auto tuning_status = configure_tree_tuning(opt->tuning, &o);
+    if (!tuning_status.ok()) {
+        return to_status(tuning_status);
+    }
     if (opt->frame_bytes != 0) {
         o.frame_bytes = opt->frame_bytes;
     }
@@ -345,24 +327,38 @@ ct_status ct_open(const ct_options *opt, ct_tree **out)
     }
 
     const bool durable = opt->path != nullptr && opt->path[0] != '\0';
+    if (opt->page_store == nullptr && (durable || runtime == nullptr)) {
+        h->backend                = std::make_shared<PageStoreBundle>();
+        h->backend->backend_label = o.backend_label;
+        o.backend_owner           = h->backend;
+    }
     if (opt->page_store != nullptr) {
         if (opt->page_store->bundle == nullptr || opt->page_store->bundle->store == nullptr) {
             return static_cast<ct_status>(Code::kInvalidArgument);
         }
-        h->injected_store  = opt->page_store->bundle;
-        o.page_store       = h->injected_store->store.get();
-        o.async_page_store = h->injected_store->async_store_view != nullptr ? h->injected_store->async_store_view
-                                                                            : h->injected_store->async_store.get();
-        o.backend_label    = h->injected_store->backend_label;
+        h->backend      = opt->page_store->bundle;
+        o.backend_owner = h->backend;
+        o.page_store    = h->backend->store.get();
+        o.async_page_store =
+            h->backend->async_store_view != nullptr ? h->backend->async_store_view : h->backend->async_store.get();
+        o.backend_label = h->backend->backend_label;
 #ifdef CROWDB_HAVE_LIBURING
-        o.async_uring = h->injected_store->uring.get();
+        o.async_uring = h->backend->uring.get();
 #endif
         std::unique_ptr<Crowdbtree> t;
-        Status                      os = Crowdbtree::open(o, &t);
+        Status os = migrate != nullptr ? migrate(o, migration_generation, &t) : Crowdbtree::open(o, &t);
         if (!os.ok()) {
             return to_status(os);
         }
         h->tree = std::move(t);
+    }
+    else if (!durable && runtime != nullptr) {
+        // A volatile runtime Tree has no reloadable backend or checkpoint.
+        // Keep it on the same immutable core as direct C++ construction.
+        auto status = TreeCoreAccess::create_volatile(o, &h->tree);
+        if (!status.ok()) {
+            return to_status(status);
+        }
     }
     else if (!durable) {
         // In-memory: BlockPageStore::open_mem with IU=1
@@ -372,8 +368,8 @@ ct_status ct_open(const ct_options *opt, ct_tree **out)
             return to_status(s);
         }
         bs->set_sync_mode(sm);
-        h->store     = std::move(bs);
-        o.page_store = h->store.get();
+        h->backend->store = std::move(bs);
+        o.page_store      = h->backend->store.get();
         std::unique_ptr<Crowdbtree> t;
         Status                      os = Crowdbtree::open(o, &t);
         if (!os.ok()) {
@@ -391,8 +387,8 @@ ct_status ct_open(const ct_options *opt, ct_tree **out)
             return to_status(s);
         }
         ts->set_sync_mode(sm);
-        h->store     = std::move(ts);
-        o.page_store = h->store.get();
+        h->backend->store = std::move(ts);
+        o.page_store      = h->backend->store.get();
         std::unique_ptr<Crowdbtree> t;
         Status                      os = Crowdbtree::open(o, &t);
         if (!os.ok()) {
@@ -405,8 +401,8 @@ ct_status ct_open(const ct_options *opt, ct_tree **out)
         uint32_t iu = opt->iu_size == 0 ? 1 : opt->iu_size;
         auto     ms = std::make_unique<MemPageStore>(iu);
         ms->set_sync_mode(sm);
-        h->store     = std::move(ms);
-        o.page_store = h->store.get();
+        h->backend->store = std::move(ms);
+        o.page_store      = h->backend->store.get();
         std::unique_ptr<Crowdbtree> t;
         Status                      os = Crowdbtree::open(o, &t);
         if (!os.ok()) {
@@ -424,13 +420,13 @@ ct_status ct_open(const ct_options *opt, ct_tree **out)
             return to_status(s);
         }
         bs->set_sync_mode(sm);
-        h->store     = std::move(bs);
-        o.page_store = h->store.get();
+        h->backend->store = std::move(bs);
+        o.page_store      = h->backend->store.get();
 #ifdef CROWDB_HAVE_LIBURING
         // Wire a DiskIOUring + BlockAsyncPageStore so get_async's demand-load
         // miss path completes off the poll thread instead of blocking
-        // the caller. The async_store borrows both the store (h->store)
-        // and the uring (h->uring), both owned by h and outliving tree.
+        // the caller. The async_store borrows both the store (h->backend->store)
+        // and the uring (h->backend->uring), both owned by h and outliving tree.
         crowdb::common::Topology       uring_topo;
         crowdb::common::PipelineConfig uring_cfg;
         uring_cfg.entries = 256;
@@ -438,15 +434,15 @@ ct_status ct_open(const ct_options *opt, ct_tree **out)
         uring_topo.pipelines.push_back(uring_cfg);
         auto candidate = std::make_unique<crowdb::common::DiskIOUring>(std::move(uring_topo));
         if (candidate->valid()) {
-            h->uring = std::move(candidate);
+            h->backend->uring = std::move(candidate);
             // Register all extent fds with the uring so submit_* can route.
-            for (int fd : static_cast<BlockPageStore *>(h->store.get())->all_extent_fds()) {
-                h->uring->register_fd(fd);
+            for (int fd : static_cast<BlockPageStore *>(h->backend->store.get())->all_extent_fds()) {
+                h->backend->uring->register_fd(fd);
             }
-            h->async_store =
-                std::make_unique<BlockAsyncPageStore>(static_cast<BlockPageStore *>(h->store.get()), h->uring.get());
-            o.async_uring      = h->uring.get();
-            o.async_page_store = h->async_store.get();
+            h->backend->async_store = std::make_unique<BlockAsyncPageStore>(
+                static_cast<BlockPageStore *>(h->backend->store.get()), h->backend->uring.get());
+            o.async_uring      = h->backend->uring.get();
+            o.async_page_store = h->backend->async_store.get();
         }
         else {
             // Containers may run without CAP_SYS_ADMIN, which makes the
@@ -467,6 +463,57 @@ ct_status ct_open(const ct_options *opt, ct_tree **out)
     return static_cast<ct_status>(Code::kOk);
 }
 
+catch (const std::bad_alloc &) {
+    return static_cast<ct_status>(Code::kResourceExhausted);
+}
+catch (...) {
+    return static_cast<ct_status>(Code::kInternal);
+}
+
+ct_status ct_open_configured(const ct_options *opt, ct_runtime *runtime, const ct_tree_runtime_options *binding,
+                             ct_tree **out)
+{
+    return open_configured(opt, runtime, binding, out, 0, nullptr);
+}
+
+ct_status ct_migrate_configured(const ct_options *opt, ct_runtime *runtime, const ct_tree_runtime_options *binding,
+                                uint64_t generation, CApiMigration migrate, ct_tree **out)
+{
+    if (out != nullptr) {
+        *out = nullptr;
+    }
+    if (opt == nullptr || out == nullptr || runtime == nullptr || opt->page_store == nullptr || generation == 0 ||
+        generation == UINT64_MAX || migrate == nullptr) {
+        return static_cast<ct_status>(Code::kInvalidArgument);
+    }
+    return open_configured(opt, runtime, binding, out, generation, migrate);
+}
+
+ct_status ct_open(const ct_options *opt, ct_tree **out)
+{
+    return ct_open_configured(opt, nullptr, nullptr, out);
+}
+
+crowdb::tree::Crowdbtree *c_api_tree(ct_tree *tree) noexcept
+{
+    return tree == nullptr ? nullptr : tree->tree.get();
+}
+
+crowdb::tree::PageStore *c_api_page_store(ct_tree *tree) noexcept
+{
+    return tree != nullptr && tree->backend ? tree->backend->store.get() : nullptr;
+}
+
+std::shared_ptr<CompletionSignal> c_api_completion_signal(ct_tree *tree) noexcept
+{
+    return tree->completion;
+}
+
+void c_api_notify_completion(const std::shared_ptr<CompletionSignal> &signal) noexcept
+{
+    signal->notify();
+}
+
 void ct_close(ct_tree *t)
 {
     delete t;
@@ -475,14 +522,23 @@ void ct_close(ct_tree *t)
 ct_status ct_rebuild_range(ct_tree *source, const ct_options *destination_options, ct_tree **out,
                            ct_range_rebuild_stats *stats)
 {
+    return ct_rebuild_configured(source, destination_options, Config{}, out, stats);
+}
+
+ct_status ct_rebuild_configured(ct_tree *source, const ct_options *destination_options, Config options, ct_tree **out,
+                                ct_range_rebuild_stats *stats)
+try {
     if (source == nullptr || destination_options == nullptr || out == nullptr ||
         destination_options->page_store == nullptr || destination_options->page_store->bundle == nullptr ||
         destination_options->page_store->bundle->store == nullptr) {
         return static_cast<ct_status>(Code::kInvalidArgument);
     }
 
-    auto   handle = std::make_unique<ct_tree>();
-    Config options;
+    auto handle        = std::make_unique<ct_tree>();
+    auto tuning_status = configure_tree_tuning(destination_options->tuning, &options);
+    if (!tuning_status.ok()) {
+        return to_status(tuning_status);
+    }
     if (destination_options->frame_bytes != 0) {
         options.frame_bytes = destination_options->frame_bytes;
     }
@@ -512,12 +568,12 @@ ct_status ct_rebuild_range(ct_tree *source, const ct_options *destination_option
         options.key_range = KeyRange::bounded(std::move(start), std::move(end));
     }
 
-    handle->injected_store   = destination_options->page_store->bundle;
-    options.page_store       = handle->injected_store->store.get();
-    options.async_page_store = handle->injected_store->async_store_view != nullptr
-                                 ? handle->injected_store->async_store_view
-                                 : handle->injected_store->async_store.get();
-    options.backend_label    = handle->injected_store->backend_label;
+    handle->backend          = destination_options->page_store->bundle;
+    options.backend_owner    = handle->backend;
+    options.page_store       = handle->backend->store.get();
+    options.async_page_store = handle->backend->async_store_view != nullptr ? handle->backend->async_store_view
+                                                                            : handle->backend->async_store.get();
+    options.backend_label    = handle->backend->backend_label;
     RangeRebuildStats rebuilt;
     Status            status = rebuild_range(*source->tree, options.key_range, options, &handle->tree, &rebuilt);
     if (!status.ok()) {
@@ -536,6 +592,13 @@ ct_status ct_rebuild_range(ct_tree *source, const ct_options *destination_option
     }
     *out = handle.release();
     return static_cast<ct_status>(Code::kOk);
+}
+
+catch (const std::bad_alloc &) {
+    return static_cast<ct_status>(Code::kResourceExhausted);
+}
+catch (...) {
+    return static_cast<ct_status>(Code::kInternal);
 }
 
 void ct_init_logging(const char *log_dir, const char *level, size_t max_file_mb, size_t max_files,
@@ -728,7 +791,7 @@ void ct_get_tree_summary(const ct_tree *t, ct_tree_summary *out)
 }
 
 char *ct_flush_metrics_str(ct_tree *t, double window_secs, const char *timestamp, size_t width)
-{
+try {
     if (t == nullptr || timestamp == nullptr) {
         return nullptr;
     }
@@ -744,10 +807,13 @@ char *ct_flush_metrics_str(ct_tree *t, double window_secs, const char *timestamp
     out[str.size()] = '\0';
     return out;
 }
+catch (...) {
+    return nullptr;
+}
 
 char *ct_flush_metrics_str_ext(ct_tree *t, double window_secs, const char *timestamp, size_t width, size_t count_w,
                                size_t tps_w)
-{
+try {
     if (t == nullptr || timestamp == nullptr) {
         return nullptr;
     }
@@ -762,6 +828,9 @@ char *ct_flush_metrics_str_ext(ct_tree *t, double window_secs, const char *times
     std::memcpy(out, str.data(), str.size());
     out[str.size()] = '\0';
     return out;
+}
+catch (...) {
+    return nullptr;
 }
 
 void ct_negotiate_widths(const ct_tree *t, ct_column_widths input, ct_column_widths *out)
@@ -949,8 +1018,8 @@ try {
     if (t == nullptr) {
         return static_cast<ct_status>(Code::kInvalidArgument);
     }
-    std::vector<Crowdbtree::external_op> external;
-    external.reserve(count);
+    std::vector<Crowdbtree::encoded_op> encoded;
+    encoded.reserve(count);
     for (uint64_t i = 0; i < count; ++i) {
         const ct_ext_op &op = ops[i];
         if (op.key == nullptr && op.key_len != 0) {
@@ -959,19 +1028,23 @@ try {
         if (op.kind != 0 && op.kind != 1) {
             return static_cast<ct_status>(Code::kInvalidArgument);
         }
-        std::string key(reinterpret_cast<const char *>(op.key), op.key_len);
-        uint8_t     flags = (op.kind == 1) ? kFlagTombstone : 0;
-        buffer      value;
-        if (op.kind == 0) {
-            // Borrow the value bytes from Rust-owned memory; crowdb-tree calls
-            // drop_fn(bytes_ref) when this buffer is freed (drain/overwrite).
-            value = buffer::wrap_external(op.value, op.value_len, op.bytes_ref, op.drop_fn);
+        if (op.kind == 0 && op.value == nullptr && op.value_len != 0) {
+            return static_cast<ct_status>(Code::kInvalidArgument);
         }
-        unclaimed.next = i + 1;
-        // Delete: value stays default (empty); flags = kFlagTombstone.
-        external.push_back({.key = std::move(key), .flags = flags, .value = std::move(value)});
+        std::string key(reinterpret_cast<const char *>(op.key), op.key_len);
+        const auto  kind = op.kind == 0 ? OpKind::kPut : OpKind::kDelete;
+        // This legacy ABI has no complete allocation identity or capacity.
+        // Copy only the requested value into an owned cell, then release the
+        // unknown backing allocation instead of retaining it at slice cost.
+        const Slice value(reinterpret_cast<const char *>(op.value), op.kind == 0 ? op.value_len : 0);
+        auto        cell = encode_cell_buf(slot, kind, value);
+        unclaimed.next   = i + 1;
+        if (op.kind == 0 && op.drop_fn != nullptr) {
+            op.drop_fn(op.bytes_ref);
+        }
+        encoded.push_back({.key = std::move(key), .cell = std::move(cell)});
     }
-    return to_status(t->tree->apply_external(slot, std::move(external)));
+    return to_status(t->tree->apply_encoded(slot, std::move(encoded)));
 }
 catch (const std::bad_alloc &) {
     return static_cast<ct_status>(Code::kResourceExhausted);
@@ -1017,11 +1090,11 @@ catch (...) {
 
 ct_status ct_apply_put_owned(ct_tree *t, uint64_t slot, ct_write_handle *handle)
 try {
+    std::unique_ptr<ct_write_handle> owner(handle);
     if (t == nullptr || handle == nullptr) {
         return static_cast<ct_status>(Code::kInvalidArgument);
     }
-    std::unique_ptr<ct_write_handle> owner(handle);
-    uint8_t                         *p = handle->cell.data();
+    uint8_t *p = handle->cell.data();
     for (int i = 0; i < 8; ++i) {
         p[i] = static_cast<uint8_t>((slot >> (8 * i)) & 0xff);
     }
@@ -1121,49 +1194,30 @@ ct_status ct_release_split_memtable_view(ct_tree *t, uint64_t generation)
     return to_status(t->tree->release_split_memtable_view(generation));
 }
 
-ct_status ct_get(ct_tree *t, const uint8_t *key, size_t klen, int32_t *found, uint64_t *slot, ct_buf *value)
-{
-    if (t == nullptr || found == nullptr) {
-        return static_cast<ct_status>(Code::kInvalidArgument);
-    }
-    Status range_status = t->tree->validate_key(Slice(reinterpret_cast<const char *>(key), klen));
-    if (!range_status.ok()) {
-        return to_status(range_status);
-    }
-    std::string v;
-    uint64_t    s  = 0;
-    bool        ok = t->tree->get(Slice(reinterpret_cast<const char *>(key), klen), &s, &v);
-    *found         = ok ? 1 : 0;
-    if (ok) {
-        if (slot != nullptr) {
-            *slot = s;
-        }
-        if (value != nullptr) {
-            *value = make_buf(v.data(), v.size());
-        }
-    }
-    else if (value != nullptr) {
-        *value = make_buf(nullptr, 0);
-    }
-    return static_cast<ct_status>(Code::kOk);
-}
-
 // ── Async data path ───────────────────────────────────────────────
 
 ct_future *ct_get_async(ct_tree *t, const uint8_t *key, size_t klen)
-{
+try {
     if (t == nullptr) {
         return nullptr;
     }
-    auto impl           = std::make_shared<ct_future_impl>();
+    auto impl           = make_tree_future(t);
     impl->kind          = ct_future_impl::Kind::kGet;
     auto   signal       = t->completion;
     Status range_status = t->tree->validate_key(Slice(reinterpret_cast<const char *>(key), klen));
+    if (auto *core = TreeCoreAccess::get(*t->tree); core != nullptr && range_status.ok()) {
+        try {
+            impl->result_controls = c_api_result_controls(core->binding()->account());
+        }
+        catch (const std::bad_alloc &) {
+            range_status = Status::resource_exhausted("returned owner control reserve unavailable");
+        }
+    }
     if (!range_status.ok()) {
         impl->status = to_status(range_status);
         impl->done.store(true, std::memory_order_release);
         signal->notify();
-        return reinterpret_cast<ct_future *>(new ct_future_handle(std::move(impl)));
+        return reinterpret_cast<ct_future *>(make_ct_future_handle(std::move(impl)));
     }
     t->tree->get_async(Slice(reinterpret_cast<const char *>(key), klen), [impl, signal](Status status, GetView view) {
         impl->status     = to_status(status);
@@ -1171,15 +1225,18 @@ ct_future *ct_get_async(ct_tree *t, const uint8_t *key, size_t klen)
         impl->done.store(true, std::memory_order_release);
         signal->notify();
     });
-    return reinterpret_cast<ct_future *>(new ct_future_handle(std::move(impl)));
+    return reinterpret_cast<ct_future *>(make_ct_future_handle(std::move(impl)));
+}
+catch (...) {
+    return nullptr;
 }
 
 ct_future *ct_flush_async(ct_tree *t)
-{
+try {
     if (t == nullptr) {
         return nullptr;
     }
-    auto impl   = std::make_shared<ct_future_impl>();
+    auto impl   = make_tree_future(t);
     impl->kind  = ct_future_impl::Kind::kFlush;
     auto signal = t->completion;
     t->tree->flush_async([impl, signal](const Status &st) {
@@ -1187,15 +1244,18 @@ ct_future *ct_flush_async(ct_tree *t)
         impl->done.store(true, std::memory_order_release);
         signal->notify();
     });
-    return reinterpret_cast<ct_future *>(new ct_future_handle(std::move(impl)));
+    return reinterpret_cast<ct_future *>(make_ct_future_handle(std::move(impl)));
+}
+catch (...) {
+    return nullptr;
 }
 
 ct_future *ct_snapshot_async(ct_tree *t)
-{
+try {
     if (t == nullptr) {
         return nullptr;
     }
-    auto impl   = std::make_shared<ct_future_impl>();
+    auto impl   = make_tree_future(t);
     impl->kind  = ct_future_impl::Kind::kSnapshot;
     auto signal = t->completion;
     t->tree->snapshot_async([impl, signal](const Status &st, uint64_t last_applied) {
@@ -1204,7 +1264,10 @@ ct_future *ct_snapshot_async(ct_tree *t)
         impl->done.store(true, std::memory_order_release);
         signal->notify();
     });
-    return reinterpret_cast<ct_future *>(new ct_future_handle(std::move(impl)));
+    return reinterpret_cast<ct_future *>(make_ct_future_handle(std::move(impl)));
+}
+catch (...) {
+    return nullptr;
 }
 
 ct_future *ct_scan_async(ct_tree *t, const uint8_t *prefix, size_t plen, const uint8_t *start_after, size_t salen,
@@ -1218,11 +1281,11 @@ ct_future *ct_scan_async(ct_tree *t, const uint8_t *prefix, size_t plen, const u
 ct_future *ct_scan_directional_async(ct_tree *t, const uint8_t *prefix, size_t plen, const uint8_t *start_after,
                                      size_t salen, const uint8_t *end_key, size_t elen, size_t limit,
                                      size_t byte_budget, int keys_only, uint64_t deadline_ms, int direction)
-{
+try {
     if (t == nullptr) {
         return nullptr;
     }
-    auto impl  = std::make_shared<ct_future_impl>();
+    auto impl  = make_tree_future(t);
     impl->kind = ct_future_impl::Kind::kScan;
     t->tree->scan_directional_async(
         Slice(reinterpret_cast<const char *>(prefix), plen), Slice(reinterpret_cast<const char *>(start_after), salen),
@@ -1237,7 +1300,10 @@ ct_future *ct_scan_directional_async(ct_tree *t, const uint8_t *prefix, size_t p
             impl->done.store(true, std::memory_order_release);
             signal->notify();
         });
-    return reinterpret_cast<ct_future *>(new ct_future_handle(std::move(impl)));
+    return reinterpret_cast<ct_future *>(make_ct_future_handle(std::move(impl)));
+}
+catch (...) {
+    return nullptr;
 }
 
 ct_status ct_future_poll(ct_future *f, int32_t *done, int32_t *out_found, uint64_t *out_slot, ct_buf *out_value)
@@ -1247,6 +1313,10 @@ ct_status ct_future_poll(ct_future *f, int32_t *done, int32_t *out_found, uint64
     }
     auto *handle = reinterpret_cast<ct_future_handle *>(f);
     auto *impl   = handle->get();
+    if (impl->kind == ct_future_impl::Kind::kFlushReport || impl->kind == ct_future_impl::Kind::kCheckpointReport ||
+        impl->kind == ct_future_impl::Kind::kChunkCollection || impl->kind == ct_future_impl::Kind::kCompaction) {
+        return static_cast<ct_status>(Code::kInvalidArgument);
+    }
     if (!impl->done.load(std::memory_order_acquire)) {
         *done = 0;
         return static_cast<ct_status>(Code::kOk);
@@ -1297,8 +1367,14 @@ ct_status ct_future_poll(ct_future *f, int32_t *done, int32_t *out_found, uint64
             // ct_buf; ct_free_buf's std::free correctly frees it.
             size_t sz = impl->scan_packed.size();
             if (sz > 0) {
-                out_value->data = impl->scan_packed.release();
-                out_value->len  = sz;
+                try {
+                    out_value->data = impl->scan_packed.release();
+                    out_value->len  = sz;
+                }
+                catch (const std::bad_alloc &) {
+                    *out_value = {};
+                    status     = static_cast<ct_status>(Code::kResourceExhausted);
+                }
             }
             else {
                 out_value->data = nullptr;
@@ -1306,7 +1382,7 @@ ct_status ct_future_poll(ct_future *f, int32_t *done, int32_t *out_found, uint64
             }
         }
     }
-    delete handle; // Flush/Snapshot/Scan: no borrowed state; free immediately.
+    free_ct_future_handle(handle); // Flush/Snapshot/Scan: no borrowed state; free immediately.
     return status;
 }
 
@@ -1315,7 +1391,7 @@ void ct_future_free(ct_future *f)
     if (f == nullptr) {
         return;
     }
-    delete reinterpret_cast<ct_future_handle *>(f);
+    free_ct_future_handle(reinterpret_cast<ct_future_handle *>(f));
 }
 
 size_t ct_uring_eventfds(const ct_tree *t, int32_t *out_fds, size_t max_fds)
@@ -1328,10 +1404,7 @@ size_t ct_uring_eventfds(const ct_tree *t, int32_t *out_fds, size_t max_fds)
         out_fds[0] = t->completion->fd;
     }
 #ifdef CROWDB_HAVE_LIBURING
-    auto *uring = t->uring.get();
-    if (uring == nullptr && t->injected_store != nullptr) {
-        uring = t->injected_store->uring.get();
-    }
+    auto *uring = t->backend == nullptr ? nullptr : t->backend->uring.get();
     if (uring != nullptr) {
         const size_t room  = max_fds > total ? max_fds - total : 0;
         const size_t count = uring->eventfds(out_fds == nullptr ? nullptr : out_fds + total, room);
@@ -1454,7 +1527,7 @@ static ct_status scan_with_budget(ct_tree *t, const uint8_t *prefix, size_t plen
                                   size_t elen, size_t limit, size_t byte_budget, int keys_only, uint64_t deadline_ms,
                                   int include_tombstones, ct_buf *out_entries, uint64_t *out_count, int32_t *truncated,
                                   bool strict_byte_budget)
-{
+try {
     if (t == nullptr || out_entries == nullptr) {
         return static_cast<ct_status>(Code::kInvalidArgument);
     }
@@ -1487,6 +1560,12 @@ static ct_status scan_with_budget(ct_tree *t, const uint8_t *prefix, size_t plen
         *truncated = tr ? 1 : 0;
     }
     return static_cast<ct_status>(Code::kOk);
+}
+catch (const std::bad_alloc &) {
+    return static_cast<ct_status>(Code::kResourceExhausted);
+}
+catch (...) {
+    return static_cast<ct_status>(Code::kInternal);
 }
 
 ct_status ct_scan(ct_tree *t, const uint8_t *prefix, size_t plen, const uint8_t *start_key, size_t sklen,
@@ -1577,10 +1656,14 @@ try {
     if (t == nullptr || out == nullptr) {
         return static_cast<ct_status>(Code::kInvalidArgument);
     }
+    *out    = nullptr;
     auto v  = std::make_unique<ct_view>();
     v->snap = t->tree->snapshot_view();
     *out    = v.release();
     return static_cast<ct_status>(Code::kOk);
+}
+catch (const SnapshotReadError &error) {
+    return static_cast<ct_status>(error.code());
 }
 catch (const std::bad_alloc &) {
     return static_cast<ct_status>(Code::kResourceExhausted);
@@ -1595,32 +1678,48 @@ uint64_t ct_view_at_slot(const ct_view *v)
 }
 
 ct_status ct_view_iter(ct_view *v, ct_iter **out)
-{
+try {
     if (v == nullptr || out == nullptr) {
         return static_cast<ct_status>(Code::kInvalidArgument);
     }
+    *out     = nullptr;
     auto it  = std::make_unique<ct_iter>();
     it->snap = v->snap;
     it->pos  = 0;
     *out     = it.release();
     return static_cast<ct_status>(Code::kOk);
 }
+catch (const std::bad_alloc &) {
+    return static_cast<ct_status>(Code::kResourceExhausted);
+}
+catch (...) {
+    return static_cast<ct_status>(Code::kInternal);
+}
 
 ct_status ct_iter_next(ct_iter *it, ct_buf *key, uint64_t *slot, uint8_t *kind, ct_buf *value, int32_t *valid)
-{
+try {
     if (it == nullptr || valid == nullptr) {
         return static_cast<ct_status>(Code::kInvalidArgument);
     }
+    *valid              = 0;
     const auto &entries = it->snap->entries();
     if (it->pos >= entries.size()) {
         *valid = 0;
         return static_cast<ct_status>(Code::kOk);
     }
-    const leaf_entry &e = entries[it->pos++];
+    const leaf_entry &e = entries[it->pos];
     CellView          cv{Slice(e.cell)};
-    *valid = 1;
+    auto              returned_key   = key != nullptr ? make_buf(e.key.data(), e.key.size()) : ct_buf{};
+    const auto        bytes          = cv.value();
+    auto              returned_value = value != nullptr ? make_buf(bytes.data(), bytes.size()) : ct_buf{};
+    if ((returned_key.len != 0 && returned_key.data == nullptr) ||
+        (returned_value.len != 0 && returned_value.data == nullptr)) {
+        ct_free_buf(&returned_key);
+        ct_free_buf(&returned_value);
+        return static_cast<ct_status>(Code::kResourceExhausted);
+    }
     if (key != nullptr) {
-        *key = make_buf(e.key.data(), e.key.size());
+        *key = returned_key;
     }
     if (slot != nullptr) {
         *slot = cv.slot();
@@ -1629,10 +1728,20 @@ ct_status ct_iter_next(ct_iter *it, ct_buf *key, uint64_t *slot, uint8_t *kind, 
         *kind = cv.is_tombstone() ? 1 : 0;
     }
     if (value != nullptr) {
-        Slice val = cv.value();
-        *value    = make_buf(val.data(), val.size());
+        *value = returned_value;
     }
+    ++it->pos;
+    *valid = 1;
     return static_cast<ct_status>(Code::kOk);
+}
+catch (const SnapshotReadError &error) {
+    return static_cast<ct_status>(error.code());
+}
+catch (const std::bad_alloc &) {
+    return static_cast<ct_status>(Code::kResourceExhausted);
+}
+catch (...) {
+    return static_cast<ct_status>(Code::kInternal);
 }
 
 void ct_iter_release(ct_iter *it)
@@ -1646,75 +1755,6 @@ void ct_view_release(ct_view *v)
 }
 
 // ── Snapshot export / import ──────────────────────────────────────
-
-ct_status ct_snapshot_export_begin(ct_tree *t, size_t chunk_bytes, ct_export **out)
-try {
-    if (t == nullptr || out == nullptr || chunk_bytes == 0) {
-        return static_cast<ct_status>(Code::kInvalidArgument);
-    }
-    auto   e = std::make_unique<ct_export>();
-    Status s = snapshot_export_begin(*t->tree, snapshot_format::kPortable, chunk_bytes, &e->exp);
-    if (!s.ok()) {
-        return to_status(s);
-    }
-    *out = e.release();
-    return static_cast<ct_status>(Code::kOk);
-}
-catch (const std::bad_alloc &) {
-    return static_cast<ct_status>(Code::kResourceExhausted);
-}
-catch (const std::exception &) {
-    return static_cast<ct_status>(Code::kInternal);
-}
-
-uint64_t ct_snapshot_export_at_slot(const ct_export *e)
-{
-    return e == nullptr ? 0 : e->exp->at_slot();
-}
-
-uint64_t ct_snapshot_export_total_bytes(const ct_export *e)
-{
-    return e == nullptr ? 0 : static_cast<uint64_t>(e->exp->total_bytes());
-}
-
-uint32_t ct_snapshot_export_final_crc32c(const ct_export *e)
-{
-    return e == nullptr ? 0 : e->exp->final_crc32c();
-}
-
-size_t ct_snapshot_export_chunk_bytes(const ct_export *e)
-{
-    return e == nullptr ? 0 : e->exp->chunk_bytes();
-}
-
-uint64_t ct_snapshot_export_offset(const ct_export *e)
-{
-    return e == nullptr ? 0 : static_cast<uint64_t>(e->exp->offset());
-}
-
-ct_status ct_snapshot_export_next(ct_export *e, uint64_t offset, ct_buf *chunk, int32_t *done)
-{
-    if (e == nullptr || chunk == nullptr || done == nullptr) {
-        return static_cast<ct_status>(Code::kInvalidArgument);
-    }
-    if (offset != static_cast<uint64_t>(e->exp->offset())) {
-        return static_cast<ct_status>(Code::kInvalidArgument);
-    }
-    std::string out;
-    bool        d = false;
-    Status      s = e->exp->next_chunk(&out, &d);
-    if (!s.ok()) {
-        return to_status(s);
-    }
-    *chunk = make_buf(out.data(), out.size());
-    *done  = d ? 1 : 0;
-    return static_cast<ct_status>(Code::kOk);
-}
-
-void ct_snapshot_export_end(ct_export *e)
-{
-    delete e;
-}
 
 ct_status ct_snapshot_import_begin(ct_tree *t, ct_import **out)
 {

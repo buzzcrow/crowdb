@@ -6,6 +6,7 @@ use crowdb_tree_ffi::{Config, Crowdbtree, CtError};
 #[test]
 fn follows_real_root_children_and_preserves_binary_keys() {
     let tree = Crowdbtree::open(&Config {
+        page_store: Some(crowdb_tree_ffi::PageStore::open_mem(4096).unwrap().into()),
         frame_bytes: 4096,
         ..Config::default()
     })

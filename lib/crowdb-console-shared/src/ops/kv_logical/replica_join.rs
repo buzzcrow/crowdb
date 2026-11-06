@@ -19,17 +19,17 @@ pub(super) async fn bootstrap(
             0,
             0,
             crate::deployment::CLUSTER_KEY,
-            crowdb_kv_client::ReadMode::Linearizable,
+            crowdb_paxos_kv_client::ReadMode::Linearizable,
             None,
         )
         .await?
     {
-        crowdb_kv_client::GetOutcome::Found { value, .. } => {
+        crowdb_paxos_kv_client::GetOutcome::Found { value, .. } => {
             let operation: crate::deployment::PreparedBootstrap =
                 serde_json::from_slice(&value).map_err(|error| Error::Config(error.to_string()))?;
             Ok(Some(operation.identity))
         }
-        crowdb_kv_client::GetOutcome::NotFound => Ok(None),
+        crowdb_paxos_kv_client::GetOutcome::NotFound => Ok(None),
     }
 }
 

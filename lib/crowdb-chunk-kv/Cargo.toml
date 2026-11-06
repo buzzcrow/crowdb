@@ -30,6 +30,7 @@ tokio = { workspace = true, features = ["rt", "sync", "time"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
+crowdb-tree-ffi = { path = "../crowdb-tree/ffi", features = ["test-util"] }
 crowdb-chunk-kv = { path = ".", features = ["test-util"] }
 crowdb-chunk-stream = { path = "../crowdb-chunk-stream", features = ["test-util"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }

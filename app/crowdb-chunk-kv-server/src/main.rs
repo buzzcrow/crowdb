@@ -14,7 +14,7 @@ use crowdb_chunk_kv_server::{
     ChunkKvStorage, DomainMonitorRegistry, Group0ControlStore, ManagementState, StorageRuntimeError,
     TransitionExecutor, TransitionProcessor,
 };
-use crowdb_kv_client::{WatchNotifyClient, WatchSubscription};
+use crowdb_paxos_kv_client::{WatchNotifyClient, WatchSubscription};
 use crowdb_protocol::chunk_kv::{
     ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPageRef,
     ChunkKvRangeCatalogPartitionState, EnsureDomainMonitorOutcome, EnsureDomainMonitorRequest, KeyRange,
@@ -24,6 +24,8 @@ use crowdb_protocol::key::{
     ChunkKvRangeCatalogHeadKey, ChunkKvSplitKey, ChunkKvTransferKey, ServingGrantKey, TextKey,
 };
 use tracing::{error, info, warn};
+
+mod host_lifecycle;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -146,7 +148,7 @@ async fn main() -> std::process::ExitCode {
         "crowdb-chunk-kv-server starting"
     );
 
-    let mut metrics_runner = crowdb_chunk_kv_server::metrics::start_stream_perf_log(
+    let mut metrics_runner = crowdb_chunk_kv_server::metrics::create_perf_log(
         &log_dir,
         args.metrics_interval,
         args.log_max_file_mb,
@@ -161,6 +163,33 @@ async fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
+    let mut host = host_lifecycle::HostLifecycle::new(storage);
+    let result = serve_host(
+        &mut host,
+        &config,
+        http_addr,
+        rpc_addr,
+        rpc_advertise_addr,
+        metrics_runner.as_mut(),
+    )
+    .await;
+    host.close().await;
+    if let Some(runner) = &mut metrics_runner {
+        runner.stop().await;
+    }
+    result
+}
+
+#[allow(clippy::too_many_lines)]
+async fn serve_host(
+    host: &mut host_lifecycle::HostLifecycle,
+    config: &ChunkKvServerConfig,
+    http_addr: SocketAddr,
+    rpc_addr: SocketAddr,
+    rpc_advertise_addr: SocketAddr,
+    metrics_runner: Option<&mut crowdb_common::metrics::MetricsRunner>,
+) -> std::process::ExitCode {
+    let storage = host.storage.clone();
     let control_store = Arc::new(Group0ControlStore::from_client(Arc::clone(storage.kv())));
     let monitor_registry = DomainMonitorRegistry::new(
         control_store.clone(),
@@ -198,12 +227,9 @@ async fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
-    if let Err(error) = storage
-        .streams()
-        .registry()
-        .bind_owner_process(process_lease.authority())
-    {
-        error!(%error, "failed to bind WAL stream process authority");
+    host.process = Some(process_lease.clone());
+    if let Err(error) = storage.bind_owner_process(process_lease.authority()) {
+        error!(%error, "failed to bind tree and WAL process authority");
         return std::process::ExitCode::FAILURE;
     }
     let service = match ChunkKvService::new(process_lease.authority(), config.max_hosted_partitions) {
@@ -214,6 +240,14 @@ async fn main() -> std::process::ExitCode {
         }
     };
 
+    host.service = Some(service.clone());
+    if let Some(runner) = metrics_runner {
+        runner.set_sampler(
+            crowdb_chunk_kv_server::metrics::TreeResources::new(storage.tree_runtime().clone(), &service)
+                .with_storage(&storage),
+        );
+        runner.start();
+    }
     let catalog = Arc::new(ChunkKvRangeCatalogPublisher::new(control_store.clone()));
     let recovery_storage = &storage;
     let recovery_service = &service;
@@ -308,11 +342,13 @@ async fn main() -> std::process::ExitCode {
         }
     };
     let refresh_interval = std::time::Duration::from_millis(config.catalog_refresh_interval_ms);
+    let stop = host.stop.clone();
     let refresh_task = tokio::spawn(async move {
         let mut interval = tokio::time::interval(refresh_interval);
         interval.tick().await;
         loop {
             let grant_only = tokio::select! {
+                () = stop.wait() => break,
                 _ = interval.tick() => false,
                 alive = receive_transition_notify(&mut catalog_watch) => {
                     if !alive {
@@ -375,6 +411,7 @@ async fn main() -> std::process::ExitCode {
             }
         }
     });
+    host.tasks[0] = Some(refresh_task);
     let transition_executor = match TransitionExecutor::new(
         config.instance_id,
         Arc::clone(&service),
@@ -384,7 +421,6 @@ async fn main() -> std::process::ExitCode {
         Ok(executor) => Arc::new(executor),
         Err(error) => {
             error!(%error, "failed to initialize transition worker");
-            refresh_task.abort();
             return std::process::ExitCode::FAILURE;
         }
     };
@@ -409,10 +445,12 @@ async fn main() -> std::process::ExitCode {
         }
     };
     let transition_interval = std::time::Duration::from_millis(config.catalog_refresh_interval_ms);
+    let stop = host.stop.clone();
     let transition_task = tokio::spawn(async move {
         let mut interval = tokio::time::interval(transition_interval);
         loop {
             tokio::select! {
+                () = stop.wait() => break,
                 _ = interval.tick() => {}
                 alive = receive_transition_notify(&mut transfer_watch) => {
                     if !alive {
@@ -431,6 +469,7 @@ async fn main() -> std::process::ExitCode {
         }
     });
 
+    host.tasks[1] = Some(transition_task);
     let capacity_bytes = u64::try_from(config.max_hosted_partitions)
         .unwrap_or(u64::MAX)
         .saturating_mul(config.balance.target_partition_bytes);
@@ -445,13 +484,13 @@ async fn main() -> std::process::ExitCode {
         .await
     {
         error!(%error, "failed to register chunk KV instance");
-        transition_task.abort();
-        refresh_task.abort();
         return std::process::ExitCode::FAILURE;
     }
-    install_latest_grant(&control_store, &service, &config).await;
+    install_latest_grant(&control_store, &service, config).await;
     let materialization_service = Arc::clone(&service);
+    let materialization_storage = Arc::clone(&storage);
     let materialization_interval = std::time::Duration::from_millis(config.catalog_refresh_interval_ms);
+    let stop = host.stop.clone();
     let materialization_task = tokio::spawn(async move {
         let mut interval = tokio::time::interval(materialization_interval);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -460,6 +499,7 @@ async fn main() -> std::process::ExitCode {
         loop {
             tokio::select! {
                 biased;
+                () = stop.wait() => break,
                 _ = interval.tick() => {
                     if let Err(error) = materialization_service.materialize_split_overlays().await {
                         warn!(%error, "chunk KV split-overlay materialization pass failed");
@@ -474,13 +514,22 @@ async fn main() -> std::process::ExitCode {
                     false
                 }
             };
+            match materialization_service
+                .resume_legacy_retirement(&materialization_storage)
+                .await
+            {
+                Ok(backlog) => pending |= backlog,
+                Err(error) => warn!(%error, "legacy Chunk retirement deferred; retaining durable claims"),
+            }
         }
     });
+    host.tasks[2] = Some(materialization_task);
     let heartbeat_service = Arc::clone(&service);
     let heartbeat_lease = Arc::clone(&process_lease);
     let heartbeat_store = Arc::clone(&control_store);
     let heartbeat_config = config.clone();
     let heartbeat_endpoint = rpc_advertise_addr.to_string();
+    let stop = host.stop.clone();
     let heartbeat_task = tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(
             heartbeat_config.monitor.heartbeat_interval_ms,
@@ -489,7 +538,10 @@ async fn main() -> std::process::ExitCode {
         let mut previous_requests = heartbeat_service.metrics().snapshot().requests;
         let mut previous_ms = heartbeat_service.monotonic_ms();
         loop {
-            interval.tick().await;
+            tokio::select! {
+                () = stop.wait() => break,
+                _ = interval.tick() => {},
+            }
             let now_ms = heartbeat_service.monotonic_ms();
             let requests = heartbeat_service.metrics().snapshot().requests;
             let elapsed_ms = now_ms.saturating_sub(previous_ms).max(1);
@@ -521,6 +573,7 @@ async fn main() -> std::process::ExitCode {
         }
     });
 
+    host.tasks[3] = Some(heartbeat_task);
     let rpc_server = match ChunkKvRpcService::create_server(config.rpc_workers, config.rpc_rdma.as_ref()) {
         Ok(server) => server,
         Err(error) => {
@@ -528,6 +581,7 @@ async fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
+    host.server = Some(rpc_server.clone());
     if let Err(error) = rpc_server.listen(&rpc_addr.ip().to_string(), i32::from(rpc_addr.port())) {
         error!(%rpc_addr, %error, "data RPC bind failed");
         return std::process::ExitCode::FAILURE;
@@ -536,6 +590,7 @@ async fn main() -> std::process::ExitCode {
         Arc::clone(&service),
         tokio::runtime::Handle::current(),
     ));
+    host.rpc = Some(rpc_service.clone());
     rpc_service.register_handlers(&rpc_server);
     rpc_server.start();
     info!(%rpc_addr, "data RPC server listening");
@@ -573,35 +628,6 @@ async fn main() -> std::process::ExitCode {
     info!("chunk KV HTTP shutdown complete");
     if let Err(error) = &serving {
         error!(%error, "HTTP management server failed");
-    }
-    heartbeat_task.abort();
-    materialization_task.abort();
-    transition_task.abort();
-    refresh_task.abort();
-    // These workers only observe the service and have already been fenced by
-    // begin_drain. Drop their handles after cancellation: a worker may be in
-    // a synchronous storage observation, and waiting for that observation here
-    // would hold the management restart request open until the supervisor kills
-    // the process. The service drain below is the durable shutdown barrier.
-    drop((
-        heartbeat_task,
-        materialization_task,
-        transition_task,
-        refresh_task,
-    ));
-    info!("chunk KV background workers stopped");
-    match service.drain_writers().await {
-        Ok(()) => info!("chunk KV WAL writer drain complete"),
-        Err(error) => {
-            warn!(%error, "WAL writer drain incomplete; restart must retain lease exclusion");
-        }
-    }
-    if let Err(error) = process_lease.withdraw_observation().await {
-        warn!(%error, "failed to unregister chunk KV instance");
-    }
-    info!("chunk KV observation withdrawal complete");
-    if let Some(runner) = &mut metrics_runner {
-        runner.stop().await;
     }
     if serving.is_ok() {
         std::process::ExitCode::SUCCESS

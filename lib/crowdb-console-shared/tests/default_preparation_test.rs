@@ -9,7 +9,7 @@ use crowdb_console_shared::deployment::{
     preparation::{self, DEFAULT_PREPARATION_KEY},
     CLUSTER_KEY,
 };
-use crowdb_kv_client::{GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{GetOutcome, ReadMode};
 use crowdb_protocol::{
     common::GroupValue,
     key::{KvGroupKey, TextKey},

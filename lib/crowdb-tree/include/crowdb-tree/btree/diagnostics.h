@@ -6,6 +6,93 @@
 
 namespace crowdb::tree
 {
+// Published with the mapping that produced these counts. Unknown summaries
+// contribute to their unknown-page count, never to the exact subtotal.
+struct TreeLogicalStats
+{
+    uint64_t leaf_pages                   = 0;
+    uint64_t inner_pages                  = 0;
+    uint64_t height                       = 0;
+    uint64_t dirty_pages                  = 0;
+    uint64_t overlay_pages                = 0;
+    uint64_t overlay_runs                 = 0;
+    uint64_t overlay_entries              = 0;
+    uint64_t page_size_known_bytes        = 0;
+    uint64_t page_size_unknown_pages      = 0;
+    uint64_t page_size_estimate_bytes     = 0;
+    uint64_t page_size_max_observed_bytes = 0;
+    uint64_t kv_known_count               = 0;
+    uint64_t kv_known_bytes               = 0;
+    uint64_t kv_unknown_pages             = 0;
+    uint64_t consolidate_candidate_pages  = 0;
+    uint64_t split_candidate_pages        = 0;
+    uint64_t split_ready_pages            = 0;
+    uint64_t merge_candidate_pages        = 0;
+    uint64_t merge_candidate_pairs        = 0;
+    uint64_t merge_ready_pairs            = 0;
+    uint64_t writeback_candidate_pages    = 0;
+    uint64_t evict_candidate_pages        = 0;
+    uint64_t checkpoint_pending_pages     = 0;
+    bool     checkpoint_mapping_pending   = false;
+
+    [[nodiscard]] uint64_t page_count() const
+    {
+        return leaf_pages + inner_pages;
+    }
+};
+
+// Allocation and reference gauges are sampled independently with relaxed
+// atomics. Referenced/pinned subsets overlap; only allocated + reserved is
+// meaningful as physical occupancy, and admission uses its own exact ledger.
+struct TreeResourceStats
+{
+    uint64_t allocated_bytes            = 0;
+    uint64_t reserved_bytes             = 0;
+    uint64_t payload_bytes              = 0;
+    uint64_t frame_bytes                = 0;
+    uint64_t metadata_bytes             = 0;
+    uint64_t io_bytes                   = 0;
+    uint64_t scratch_bytes              = 0;
+    uint64_t retired_bytes              = 0;
+    uint64_t resident_frames            = 0;
+    uint64_t cache_bytes                = 0;
+    uint64_t cache_pinned_bytes         = 0;
+    uint64_t proxy_pages                = 0;
+    uint64_t read_inflight_bytes        = 0;
+    uint64_t write_inflight_bytes       = 0;
+    uint64_t materialize_inflight_bytes = 0;
+    // Backing gauges may project a shared backend ledger. Use backing_stats()
+    // scope_id to deduplicate those views; RAM and admission remain per Tree.
+    uint64_t allocated_backing_bytes = 0;
+    uint64_t maintenance_queued      = 0;
+    uint64_t maintenance_inflight    = 0;
+};
+
+// Backend-ledger projection. Equal nonzero scope IDs name the same physical
+// accounting domain; observers must deduplicate scopes rather than sum views.
+struct BackingStatsSnapshot
+{
+    uint64_t scope_id        = 0;
+    uint64_t allocated_bytes = 0;
+};
+
+struct TreeProgressStats
+{
+    uint64_t maintenance_oldest_age_ns        = 0;
+    uint64_t candidate_oldest_age_ns          = 0;
+    uint64_t checkpoint_oldest_pending_age_ns = 0;
+};
+
+struct TreeStatsSnapshot
+{
+    uint64_t          instance_generation = 0;
+    uint64_t          commit_seq          = 0;
+    uint64_t          sampled_at_ns       = 0;
+    TreeLogicalStats  logical;
+    TreeResourceStats resources;
+    TreeProgressStats progress;
+};
+
 struct TreeSummary
 {
     uint64_t root_version                  = 0;
@@ -33,22 +120,21 @@ struct MergeGcStats
     uint64_t blocks_deleted  = 0; // source blocks unlinked after commit
 };
 
-// Point-in-time diagnostics snapshot: batches every
-// cheap (O(1)) internal counter worth exposing to an operator into one
-// struct, so a caller/FFI/console poll costs one call instead of many
-// small ones. Deliberately excludes anything that requires walking the
-// tree (height()/leaf_count()) or the full keyspace -- every field
-// here is already an atomic counter or BufferPool::stats(), also O(1).
+// Compatibility diagnostics. Runtime cache values are sampled from maintained
+// counters; no page, keyspace or frame walk occurs. Deprecated fields below
+// return zero. TreeStatsSnapshot and the work collector expose current schemas.
 struct EngineStats
 {
     uint64_t last_applied_slot         = 0;     // in-memory L1 coverage (see last_applied_slot())
     uint64_t contiguous_slot           = 0;     // gap-free-applied watermark (see contiguous_slot())
     uint64_t gc_watermark              = 0;     // min(snapshot_slot, safe_slot) (see gc_watermark())
     bool     io_failed                 = false; // latched media fault (see io_failed())
-    uint64_t snapshot_pages_written    = 0;     // last snapshot()'s dirty base pages written
+    uint64_t snapshot_pages_written    = 0;     // frames physically written by the last successful durable checkpoint
     uint64_t snapshot_pages_total      = 0;     // cumulative pages written across all snapshots
-    uint64_t snapshot_segments_written = 0;     // last snapshot()'s dirty mapping segments written
-    // BufferPool::Stats as of this call -- see buffer_pool.h.
+    uint64_t snapshot_segments_written = 0;     // deprecated dirty-segment counter; always zero
+    // Runtime decoded-page cache hits/misses/evictions and resident pages.
+    // Dirty counts use the published logical pages; used aliases resident.
+    // writebacks and num_frames describe the removed arena and return zero.
     uint64_t buffer_pool_hits       = 0;
     uint64_t buffer_pool_misses     = 0;
     uint64_t buffer_pool_evictions  = 0;
@@ -57,7 +143,9 @@ struct EngineStats
     uint32_t buffer_pool_dirty      = 0;
     uint32_t buffer_pool_used       = 0;
     uint32_t buffer_pool_num_frames = 0;
-    // MemTable (L0) / flush / L1 cumulative counters (monotonic since open).
+    // Deprecated legacy MemTable/flush/lookup events; these fields return zero.
+    // The work collector reports the new fixed quantity/cause schema, whose
+    // units deliberately do not alias the historical counters below.
     uint64_t mt_upsert_total        = 0; // apply() writes into L0
     uint64_t mt_overwrite_total     = 0;
     uint64_t mt_history_keep_total  = 0;
@@ -77,13 +165,8 @@ struct EngineStats
     uint64_t inner_count            = 0; // live inner pages (O(1) atomic)
 };
 
-// Per-step scan profile: each step's aggregate over the window since the last
-// scan_profile() call (the underlying LatencySummary handles are flushed, so
-// this is a destructive read -- the window resets on each call). `count` is the
-// number of scans in the window; `entries` is the total entries returned. Each
-// step's `sum_ns` / `max_ns` cover only that step; `avg_ns` is sum_ns / count.
-// Steps: l1 (B-tree descent + per-leaf resolve), merge (L0+L1 advance +
-// winner + decode), total (whole scan).
+// Deprecated empty compatibility profile. Runtime stage measurements are
+// available through the explicit work metrics collector.
 struct ScanProfile
 {
     uint64_t count   = 0; // scans in the window

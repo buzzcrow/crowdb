@@ -1,13 +1,14 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient};
 use crowdb_protocol::chunk_kv::{
     ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPageRef,
     ChunkKvRangeCatalogPartitionState, Id128, KeyRange, OwnerDescriptor, PartitionArtifact,
 };
 use crowdb_protocol::chunk_stream::StreamName;
 use crowdb_protocol::key::{ChunkKvRangeCatalogHeadKey, ChunkKvRangeCatalogPageKey, TextKey};
+use crowdb_protocol::port::ports::WEB_BASE;
 use reqwest::StatusCode;
 use serde_json::Value;
 use std::sync::Arc;
@@ -29,12 +30,12 @@ async fn runtime_get(origin: &str, query: &str) -> StatusCode {
 #[ignore = "requires owned release Web and KV containers"]
 async fn published_owner_change_invalidates_saved_catalog_and_runtime_cursors() {
     let cluster = super::fixture::web_kv().await;
-    let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(
+    let kv = Arc::new(PaxosKvClient::new(ClientConfig::new(
         cluster.mgmt_endpoints.clone(),
     )));
     kv.seed_leader(0, 0, cluster.group0_leader_endpoint.clone());
     let addresses = crate::common::management::addresses(5);
-    let app = format!("http://{}:9090", addresses[3]);
+    let app = format!("http://{}:{WEB_BASE}", addresses[3]);
     let (mut head, mut page) = catalog_fixture();
     for generation in [9, 10] {
         page.generation = generation;

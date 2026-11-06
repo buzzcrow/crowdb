@@ -39,7 +39,7 @@ class StandaloneWebCluster(Cluster):
             config.write_text("broken config")
         address = str(subnet.network_address + 2)
         self.addresses.append(start_node(self, 0, data,
-            ("server", "web", "--bind", "0.0.0.0", "--port", "9090",
+            ("server", "web", "--bind", "0.0.0.0", "--port", "6135",
              "--ui-root", "/opt/crowdb/ui", "--log-dir", "/opt/crowdb/data/log/web"),
             address=address, environment=("CROWDB_RUNTIME_ROOT=/opt/crowdb/data",)))
         self.ready()
@@ -54,7 +54,7 @@ class StandaloneWebCluster(Cluster):
             (self.artifacts / "standalone-rejection.json").write_text(json.dumps({
                 "state": state, "log": self.command("logs", self.servers[0])}, indent=2))
         else:
-            wait(lambda: HTTP.open(f"http://{self.addresses[0]}:9090/healthz", timeout=5).read(),
+            wait(lambda: HTTP.open(f"http://{self.addresses[0]}:6135/healthz", timeout=5).read(),
                  lambda body: body == b"ok", "standalone Web listener", seconds=20)
 
     def chunkdb_launch(self, action, node):

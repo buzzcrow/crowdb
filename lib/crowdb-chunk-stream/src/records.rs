@@ -4,7 +4,7 @@
 //! Ordered Stream chunk records over conditional KV operations.
 
 use crate::{Result, StreamError};
-use crowdb_kv_client::GetOutcome;
+use crowdb_paxos_kv_client::GetOutcome;
 use crowdb_protocol::chunk_stream::{
     decode_stream_chunk_record, StreamChunkRecord, StreamChunkState, StreamMappingIndex, StreamName,
 };
@@ -182,12 +182,12 @@ fn codec_error(error: impl std::fmt::Display) -> StreamError {
 fn corrupt(reason: &str) -> StreamError {
     StreamError::Corruption(format!("invalid Stream chunk record: {reason}"))
 }
-fn storage_error(error: crowdb_kv_client::Error) -> StreamError {
+fn storage_error(error: crowdb_paxos_kv_client::Error) -> StreamError {
     match error {
-        crowdb_kv_client::Error::CasBusy | crowdb_kv_client::Error::CasFailed { .. } => {
+        crowdb_paxos_kv_client::Error::CasBusy | crowdb_paxos_kv_client::Error::CasFailed { .. } => {
             StreamError::Backpressure
         }
-        crowdb_kv_client::Error::OutcomeUnknown => StreamError::WriteStalled,
+        crowdb_paxos_kv_client::Error::OutcomeUnknown => StreamError::WriteStalled,
         other => StreamError::ReadUnavailable(format!("Stream chunk record KV operation failed: {other}")),
     }
 }

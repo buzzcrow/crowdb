@@ -6,8 +6,8 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::Json;
 use crowdb_console_shared::config::web::WebMode;
-use crowdb_kv_client::CrowdbSysmdClient;
 use crowdb_monitor::{MonitorStatus, ServiceStatus, StatusStore};
+use crowdb_paxos_kv_client::CrowdbSysmdClient;
 use crowdb_protocol::common::{ReplicaValue, StoreValue};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -110,7 +110,7 @@ async fn validate_live_store_nodes(
     sysmd: &CrowdbSysmdClient,
     stores: &[StoreValue],
     replicas: &[ReplicaValue],
-) -> Result<(), crowdb_kv_client::Error> {
+) -> Result<(), crowdb_paxos_kv_client::Error> {
     let mut live_nodes = BTreeSet::new();
     for (_, instance) in sysmd.read_all_kv_server_instances().await? {
         let Some(node_id) = instance
@@ -122,7 +122,7 @@ async fn validate_live_store_nodes(
             continue;
         };
         if instance.rpc_endpoint.is_empty() || !live_nodes.insert(node_id) {
-            return Err(crowdb_kv_client::Error::Topology(
+            return Err(crowdb_paxos_kv_client::Error::Topology(
                 "live KV management registration is ambiguous".into(),
             ));
         }
@@ -133,7 +133,7 @@ async fn validate_live_store_nodes(
         .chain(replicas.iter().map(|replica| &replica.node_id))
         .any(|node_id| !live_nodes.contains(node_id))
     {
-        return Err(crowdb_kv_client::Error::Topology(
+        return Err(crowdb_paxos_kv_client::Error::Topology(
             "store node has no live KV management registration".into(),
         ));
     }
@@ -164,7 +164,7 @@ async fn load_snapshot(state: &AppState) -> Result<ManagedSnapshot, SnapshotFail
         let disks = sysmd.list_all_disks().await?;
         let stores = sysmd.list_stores().await?;
         if racks.is_empty() || nodes.is_empty() || !stores.iter().any(|store| store.store_id == 0) {
-            return Err(crowdb_kv_client::Error::Topology("managed topology is incomplete".into()));
+            return Err(crowdb_paxos_kv_client::Error::Topology("managed topology is incomplete".into()));
         }
 
         let disk_group_nodes = disk_groups

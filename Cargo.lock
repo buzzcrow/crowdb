@@ -306,8 +306,6 @@ checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 [[package]]
 name = "bytes"
 version = "1.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
 
 [[package]]
 name = "cast"
@@ -648,7 +646,7 @@ dependencies = [
  "crowdb-chunk-client",
  "crowdb-chunk-kv-client",
  "crowdb-common",
- "crowdb-kv-client",
+ "crowdb-paxos-kv-client",
  "crowdb-protocol",
  "data-encoding",
  "flatbuffers",
@@ -694,7 +692,7 @@ dependencies = [
  "crowdb-chunk-client",
  "crowdb-chunk-kv-client",
  "crowdb-common",
- "crowdb-kv-client",
+ "crowdb-paxos-kv-client",
  "crowdb-protocol",
  "crowdb-rpc-ffi",
  "flatbuffers",
@@ -740,8 +738,8 @@ dependencies = [
  "crowdb-console-shared",
  "crowdb-diskdb-client",
  "crowdb-diskio-client",
- "crowdb-kv",
- "crowdb-kv-client",
+ "crowdb-paxos-kv",
+ "crowdb-paxos-kv-client",
  "crowdb-protocol",
  "crowdb-rpc-ffi",
  "crowdb-test-harness",
@@ -782,7 +780,7 @@ dependencies = [
  "crowdb-common",
  "crowdb-diskdb-client",
  "crowdb-diskio-client",
- "crowdb-kv-client",
+ "crowdb-paxos-kv-client",
  "crowdb-protocol",
  "crowdb-rpc-ffi",
  "crowdb-test-harness",
@@ -822,7 +820,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "clap",
- "crowdb-kv-client",
+ "crowdb-paxos-kv-client",
  "crowdb-protocol",
  "crowdb-rpc-ffi",
  "futures",
@@ -848,8 +846,8 @@ dependencies = [
  "crowdb-chunk-kv-server",
  "crowdb-chunk-stream",
  "crowdb-common",
- "crowdb-kv",
- "crowdb-kv-client",
+ "crowdb-paxos-kv",
+ "crowdb-paxos-kv-client",
  "crowdb-protocol",
  "crowdb-rpc-ffi",
  "crowdb-test-harness",
@@ -876,8 +874,8 @@ dependencies = [
  "crowdb-chunk-client",
  "crowdb-chunk-stream",
  "crowdb-common",
- "crowdb-kv",
- "crowdb-kv-client",
+ "crowdb-paxos-kv",
+ "crowdb-paxos-kv-client",
  "crowdb-protocol",
  "crowdb-test-harness",
  "futures",
@@ -900,6 +898,9 @@ dependencies = [
  "clap",
  "crossbeam-skiplist",
  "crowdb-chunk-client",
+ "crowdb-chunk-kv",
+ "crowdb-chunk-kv-server",
+ "crowdb-chunk-stream",
  "crowdb-chunkdb",
  "crowdb-chunkdb-client",
  "crowdb-common",
@@ -907,11 +908,12 @@ dependencies = [
  "crowdb-diskdb",
  "crowdb-diskdb-client",
  "crowdb-diskio-client",
- "crowdb-kv",
- "crowdb-kv-client",
+ "crowdb-paxos-kv",
+ "crowdb-paxos-kv-client",
  "crowdb-protocol",
  "crowdb-rpc-ffi",
  "crowdb-test-harness",
+ "crowdb-tree-ffi",
  "dashmap",
  "flatbuffers",
  "futures",
@@ -934,7 +936,7 @@ version = "0.3.0"
 dependencies = [
  "arc-swap",
  "bytes",
- "crowdb-kv-client",
+ "crowdb-paxos-kv-client",
  "crowdb-protocol",
  "crowdb-rpc-ffi",
  "flatbuffers",
@@ -956,7 +958,7 @@ dependencies = [
  "crowdb-common",
  "crowdb-console-shared",
  "crowdb-diskdb-client",
- "crowdb-kv-client",
+ "crowdb-paxos-kv-client",
  "crowdb-protocol",
  "crowdb-rpc-ffi",
  "crowdb-test-harness",
@@ -1006,9 +1008,9 @@ dependencies = [
  "clap",
  "crowdb-chunkdb-client",
  "crowdb-console-shared",
- "crowdb-kv",
- "crowdb-kv-client",
- "crowdb-kv-server",
+ "crowdb-paxos-kv",
+ "crowdb-paxos-kv-client",
+ "crowdb-paxos-kv-server",
  "crowdb-protocol",
  "crowdb-rpc-ffi",
  "crowdb-test-harness",
@@ -1047,11 +1049,12 @@ dependencies = [
  "crowdb-diskdb",
  "crowdb-diskdb-client",
  "crowdb-diskio-client",
- "crowdb-kv",
- "crowdb-kv-client",
+ "crowdb-paxos-kv",
+ "crowdb-paxos-kv-client",
  "crowdb-protocol",
  "crowdb-rpc-ffi",
  "crowdb-test-harness",
+ "crowdb-tree-ffi",
  "dashmap",
  "flatbuffers",
  "futures",
@@ -1073,7 +1076,7 @@ dependencies = [
  "arc-swap",
  "bytes",
  "crowdb-diskdb-client",
- "crowdb-kv-client",
+ "crowdb-paxos-kv-client",
  "crowdb-protocol",
  "crowdb-rpc-ffi",
  "crowdb-test-harness",
@@ -1093,8 +1096,8 @@ dependencies = [
  "bytes",
  "crowdb-common",
  "crowdb-diskio-client",
- "crowdb-kv",
- "crowdb-kv-client",
+ "crowdb-paxos-kv",
+ "crowdb-paxos-kv-client",
  "crowdb-protocol",
  "crowdb-rpc-ffi",
  "flatbuffers",
@@ -1105,7 +1108,40 @@ dependencies = [
 ]
 
 [[package]]
-name = "crowdb-kv"
+name = "crowdb-monitor"
+version = "0.3.0"
+dependencies = [
+ "axum",
+ "clap",
+ "crowdb-chunk-kv-client",
+ "crowdb-console-shared",
+ "crowdb-diskio-client",
+ "crowdb-monitor",
+ "crowdb-paxos-kv",
+ "crowdb-paxos-kv-client",
+ "crowdb-protocol",
+ "crowdb-rpc-ffi",
+ "crowdb-test-harness",
+ "flatbuffers",
+ "futures",
+ "if-addrs 0.13.4",
+ "mdns-sd",
+ "rand 0.8.6",
+ "reqwest",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2",
+ "ssh-key",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "crowdb-paxos-kv"
 version = "0.3.0"
 dependencies = [
  "arc-swap",
@@ -1113,8 +1149,8 @@ dependencies = [
  "criterion",
  "crossbeam-skiplist",
  "crowdb-common",
- "crowdb-kv",
- "crowdb-kv-client",
+ "crowdb-paxos-kv",
+ "crowdb-paxos-kv-client",
  "crowdb-protocol",
  "crowdb-rpc-ffi",
  "crowdb-test-harness",
@@ -1138,7 +1174,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "crowdb-kv-client"
+name = "crowdb-paxos-kv-client"
 version = "0.3.0"
 dependencies = [
  "arc-swap",
@@ -1146,8 +1182,8 @@ dependencies = [
  "bincode",
  "bytes",
  "crowdb-common",
- "crowdb-kv",
- "crowdb-kv-client",
+ "crowdb-paxos-kv",
+ "crowdb-paxos-kv-client",
  "crowdb-protocol",
  "crowdb-rpc-ffi",
  "dashmap",
@@ -1163,7 +1199,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "crowdb-kv-server"
+name = "crowdb-paxos-kv-server"
 version = "0.3.0"
 dependencies = [
  "arc-swap",
@@ -1171,8 +1207,8 @@ dependencies = [
  "bytes",
  "clap",
  "crowdb-common",
- "crowdb-kv",
- "crowdb-kv-client",
+ "crowdb-paxos-kv",
+ "crowdb-paxos-kv-client",
  "crowdb-protocol",
  "crowdb-rpc-ffi",
  "crowdb-test-harness",
@@ -1185,39 +1221,6 @@ dependencies = [
  "tokio",
  "tracing",
  "utoipa",
- "uuid",
-]
-
-[[package]]
-name = "crowdb-monitor"
-version = "0.3.0"
-dependencies = [
- "axum",
- "clap",
- "crowdb-chunk-kv-client",
- "crowdb-console-shared",
- "crowdb-diskio-client",
- "crowdb-kv",
- "crowdb-kv-client",
- "crowdb-monitor",
- "crowdb-protocol",
- "crowdb-rpc-ffi",
- "crowdb-test-harness",
- "flatbuffers",
- "futures",
- "if-addrs 0.13.4",
- "mdns-sd",
- "rand 0.8.6",
- "reqwest",
- "rustix",
- "serde",
- "serde_json",
- "sha2",
- "ssh-key",
- "thiserror 2.0.18",
- "tokio",
- "toml",
- "tracing",
  "uuid",
 ]
 
@@ -1291,7 +1294,7 @@ dependencies = [
  "crowdb-chunk-client",
  "crowdb-chunk-kv-client",
  "crowdb-diskio-client",
- "crowdb-kv-client",
+ "crowdb-paxos-kv-client",
  "crowdb-protocol",
  "crowdb-rpc-ffi",
  "crowdb-sdk-native",
@@ -1336,6 +1339,7 @@ dependencies = [
  "crowdb-rpc-ffi",
  "crowdb-test-harness",
  "crowdb-tree-ffi",
+ "serde",
  "tokio",
 ]
 
@@ -1355,9 +1359,9 @@ dependencies = [
  "crowdb-common",
  "crowdb-console-shared",
  "crowdb-diskdb-client",
- "crowdb-kv",
- "crowdb-kv-client",
  "crowdb-monitor",
+ "crowdb-paxos-kv",
+ "crowdb-paxos-kv-client",
  "crowdb-protocol",
  "crowdb-rpc-ffi",
  "crowdb-test-harness",
@@ -1572,9 +1576,9 @@ dependencies = [
  "crowdb-console-shared",
  "crowdb-diskdb-client",
  "crowdb-diskio-client",
- "crowdb-kv",
- "crowdb-kv-client",
  "crowdb-monitor",
+ "crowdb-paxos-kv",
+ "crowdb-paxos-kv-client",
  "crowdb-protocol",
  "crowdb-rpc-ffi",
  "crowdb-sdk-native",

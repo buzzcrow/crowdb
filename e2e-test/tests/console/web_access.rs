@@ -1,6 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+use crowdb_protocol::port::ports::WEB_BASE;
 use reqwest::{Client, Method};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -21,7 +22,7 @@ async fn call(http: &Client, base: &str, method: Method, path: &str, body: Value
 #[tokio::test]
 #[ignore = "fixture setup requires the owned storage authority"]
 async fn prepare() {
-    let hardware = crowdb_kv_client::HardwareClient::new(crate::common::hardware::kv_client());
+    let hardware = crowdb_paxos_kv_client::HardwareClient::new(crate::common::hardware::kv_client());
     hardware
         .add_rack(
             1,
@@ -51,7 +52,7 @@ async fn prepare() {
 #[ignore = "requires owned release Web and native storage containers"]
 async fn native_access_deployment_provisions_private_credentials_and_reuses_them() {
     let addresses = crate::common::management::addresses(13);
-    let base = format!("http://{}:9090", addresses[12]);
+    let base = format!("http://{}:{WEB_BASE}", addresses[12]);
     let http = Client::builder()
         .timeout(Duration::from_secs(30))
         .build()

@@ -4,7 +4,7 @@
 //! Client library for CROWDB diskdb.
 //!
 //! Provides allocate/free/query APIs with retry and endpoint caching,
-//! mirroring `crowdb-kv-client`'s pattern. The client discovers diskdb
+//! mirroring `crowdb-paxos-kv-client`'s pattern. The client discovers diskdb
 //! instances via the service registry (group 0), caches
 //! `disk_group_id -> rpc_endpoint`, and lazily refreshes on cache
 //! miss or `Unavailable`.

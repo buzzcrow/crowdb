@@ -12,7 +12,7 @@ use bytes::Bytes;
 use crowdb_chunkdb_client::ChunkdbClient;
 use crowdb_diskdb_client::DiskdbClient;
 use crowdb_diskio_client::{DiskId as IoDiskId, DiskioClient, DiskioClientConfig, Durability, SegmentTarget};
-use crowdb_kv_client::{HardwareClient, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{HardwareClient, ServiceRegistryClient};
 use crowdb_protocol::chunk_task::relocation_operation_id;
 use crowdb_protocol::chunkdb::rpc::{RelocateSegmentHandoffRequest, RelocationHandoffDisposition};
 use crowdb_protocol::common::DiskId;

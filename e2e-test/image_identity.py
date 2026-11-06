@@ -83,6 +83,13 @@ SERVER_PATHS = (
     ":(exclude)tools/sdk/native_package.py",
     # The pinned Dataset consumer/fixture runner never enters server staging.
     ":(exclude)tools/sdk/dataset_workload.py",
+    # The staged node never builds/packages the operator CLI or KV shell drivers.
+    ":(exclude)app/crowdb-cli/Cargo.toml",
+    ":(exclude)app/crowdb-cli/src/commands/bench.rs",
+    ":(glob,exclude)app/crowdb-cli/src/commands/bench/**",
+    ":(glob,exclude)tools/benchmark/bench-kv-*.sh",
+    ":(exclude)tools/benchmark/test-bench-kv-write-sentinel.sh",
+    ":(exclude)container/oci-image/paxos-kv-cluster.py",
     # This host-only RPC benchmark is not a dependency or staged server binary.
     ":(exclude)app/crowdb-cli/src/commands/bench/rpc.rs",
     ":(exclude)app/crowdb-cli/src/commands/bench/result.rs",

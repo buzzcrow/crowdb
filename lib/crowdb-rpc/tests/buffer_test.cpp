@@ -178,6 +178,39 @@ TEST(BufferTest, RegisteredPoolDetachTransfersReleaseToCaller)
     buf->release();
 }
 
+TEST(BufferTest, DetachedRegisteredBufferOutlivesPoolAndRetainsSlices)
+{
+    auto    pool = std::make_unique<RegisteredBufferPool>(crowdb::rpc::RDMA_CONTROL_CAPACITY, 1);
+    Buffer *buf  = pool->alloc(4);
+    ASSERT_NE(buf, nullptr);
+    const uint8_t data[] = {1, 2, 3, 4};
+    buf->write(data, 4);
+    std::weak_ptr<void> arena = buf->pool_owner;
+    ASSERT_TRUE(pool->detach(buf));
+    Buffer *view = buf->slice(1, 2);
+    ASSERT_NE(view, nullptr);
+    pool.reset();
+    buf->release();
+    EXPECT_FALSE(arena.expired());
+    EXPECT_EQ(std::memcmp(view->data, data + 1, 2), 0);
+    view->release();
+    EXPECT_TRUE(arena.expired());
+}
+
+TEST(BufferTest, DetachedRegisteredBufferCountsQuarantineOnFinalRelease)
+{
+    RegisteredBufferPool pool(2 * crowdb::rpc::RDMA_CONTROL_CAPACITY, 1);
+    Buffer              *buf = pool.alloc(1);
+    ASSERT_NE(buf, nullptr);
+    ASSERT_TRUE(pool.detach(buf));
+    EXPECT_TRUE(buf->quarantine());
+    buf->release();
+    EXPECT_EQ(pool.quarantined_bytes(), crowdb::rpc::RDMA_CONTROL_CAPACITY);
+    Buffer *replacement = pool.alloc(1);
+    ASSERT_NE(replacement, nullptr);
+    replacement->release();
+}
+
 TEST(BufferTest, ReleasedRegisteredBufferCannotBeReleasedTwice)
 {
     RegisteredBufferPool pool(crowdb::rpc::RDMA_CONTROL_CAPACITY, 1);

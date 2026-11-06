@@ -1,0 +1,24 @@
+{
+  "format": 7,
+  "writer_base_commit": "57c8303bad4d372ddbf20d7259474ad3df45e591",
+  "fixture_sha256": "70615da50d499a0d6158e514f9ff05a222831a3cabfb5fc8a0879773a0da10bd",
+  "tree_id": 42,
+  "owner_epoch": 7,
+  "root_generation": 1,
+  "coverage": 20,
+  "wal_replay_offset": 1234,
+  "records": 20,
+  "primary_and_overflow_frames": 23,
+  "legacy_packs": 29,
+  "logical_bytes": 110979,
+  "configuration": {
+    "frame_bytes": 4096,
+    "leaf_split_bytes": 512,
+    "max_inline_value": 64,
+    "iu_size": 1,
+    "pack_bytes": 4096,
+    "mirror_copies": 2
+  },
+  "values": "key1..key19 have 128-byte values; key20 has 8192 bytes of u; values use slots matching key numbers",
+  "purpose": "Frozen output of the real historical Crowdbtree + ChunkPageStore writer; tests require only the read-only migration codecs."
+}

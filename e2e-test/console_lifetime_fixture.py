@@ -36,11 +36,11 @@ class DisposableWebCluster(Cluster):
         self.command("exec", name, "chown", "-R", "crowdb:crowdb", RUNTIME)
         self.command("exec", "-d", name, "sh", "-c",
             "CROWDB_RUNTIME_ROOT=" + RUNTIME + " /opt/crowdb/bin/entrypoint server web "
-            "--bind 0.0.0.0 --port 9090 --test-mode --ui-root /opt/crowdb/ui "
+            "--bind 0.0.0.0 --port 6135 --test-mode --ui-root /opt/crowdb/ui "
             "--log-dir /opt/crowdb/data/log/web > /opt/crowdb/data/log/web-launch.log 2>&1 & "
             "child=$!; echo $child > /opt/crowdb/data/web.pid; "
             "wait $child; echo $? > /opt/crowdb/data/web.exit")
-        wait(lambda: HTTP.open(f"http://{address}:9090/healthz", timeout=5).read(),
+        wait(lambda: HTTP.open(f"http://{address}:6135/healthz", timeout=5).read(),
              lambda body: body == b"ok", "disposable release Web readiness", seconds=3)
         self.web_pid = int(self.command("exec", name, "cat", "/opt/crowdb/data/web.pid"))
         self.identity(self.web_pid, "crowdb-web")
@@ -84,7 +84,7 @@ class DisposableWebCluster(Cluster):
         super().control({"action": "status", "node": body.get("node")})
         if action == "record-disposable-child":
             pid = body.get("pid")
-            start = self.identity(pid, "crowdb-kv-server")
+            start = self.identity(pid, "crowdb-paxos-kv-server")
             owners = self.manifests()
             if not any(record.get("pid") == pid and record.get("start") == start
                        for owner in owners for record in owner.get("processes", [])):
@@ -107,7 +107,7 @@ class DisposableWebCluster(Cluster):
             # Component clean-env tests verify stale/persistent identity and
             # claim pruning. Here the host controller verifies Web's real
             # manifest wiring before acting within its owned PID namespace.
-            if self.identity(self.child_pid, "crowdb-kv-server") != self.child_start:
+            if self.identity(self.child_pid, "crowdb-paxos-kv-server") != self.child_start:
                 raise ValueError("disposable process identity changed before cleanup")
             if not any(record.get("pid") == self.child_pid and record.get("start") == self.child_start
                        for owner in self.manifests() for record in owner.get("processes", [])):

@@ -5,10 +5,13 @@
 // durable addrs, and reopens to identical state.
 #include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/crowdb-tree.h"
+#include "runtime_tree_access.h"
+#include "snapshot/primary_backing.h"
 
 #include <gtest/gtest.h>
 
 #include <array>
+#include <chrono>
 #include <map>
 #include <memory>
 #include <string>
@@ -30,16 +33,56 @@ std::string key(int i)
     return buf.data();
 }
 
-// build a multi-level tree by inserting K keys, flushing incrementally so leaves
-// stay small (one bulk flush would make a single oversized leaf).
-void fill(Crowdbtree *t, int K, std::map<std::string, std::string> *oracle)
+// Bounded batches exercise real byte-aware splitting without relying on one
+// oversized leaf or a pointer-delta chain.
+void fill(Crowdbtree *tree, int count, std::map<std::string, std::string> *oracle)
 {
-    for (int i = 0; i < K; ++i) {
-        std::string v = "val" + std::to_string(i);
-        ASSERT_TRUE(t->apply(i + 1, put_one(key(i), v)).ok());
-        ASSERT_TRUE(t->flush().ok());
-        (*oracle)[key(i)] = v;
+    for (int first = 0; first < count; first += 100) {
+        Batch     batch;
+        const int last = std::min(first + 100, count);
+        for (int index = first; index < last; ++index) {
+            auto value = "val" + std::to_string(index);
+            batch.ops.push_back({.key = key(index), .kind = OpKind::kPut, .value = value});
+            (*oracle)[key(index)] = value;
+        }
+        ASSERT_TRUE(tree->apply(static_cast<uint64_t>(last), batch).ok());
+        tree->force_advance_slot(static_cast<uint64_t>(last));
+        ASSERT_TRUE(tree->flush().ok());
     }
+}
+
+using DurableLocations = std::map<uint64_t, std::pair<uint64_t, uint64_t>>;
+
+DurableLocations durable_locations(Crowdbtree &tree)
+{
+    DurableLocations result;
+    RuntimeTreeAccess_for_tests::capture(tree)->mapping.visit(
+        &result, [](void *raw, uint64_t pid, const std::shared_ptr<const PublishedPage> &page) {
+            if (page->primary && page->primary->frame.backing) {
+                auto       &out     = *static_cast<DurableLocations *>(raw);
+                const auto &backing = *page->primary->frame.backing;
+                out.emplace(pid, std::pair{backing.address, backing.length});
+            }
+        });
+    return result;
+}
+
+void expect_untouched_locations(const DurableLocations &before, const DurableLocations &after)
+{
+    size_t reused  = 0;
+    size_t changed = 0;
+    for (const auto &[pid, location] : before) {
+        auto current = after.find(pid);
+        if (current != after.end() && current->second == location) {
+            ++reused;
+        }
+        else {
+            ++changed;
+        }
+    }
+    EXPECT_GT(reused, 0U);
+    EXPECT_GT(changed, 0U);
+    EXPECT_LT(changed, before.size());
 }
 } // namespace
 
@@ -83,7 +126,7 @@ TEST(IncrementalCheckpoint, SingleKeyEditRewritesOnlyItsPath)
     ASSERT_GT(total, 4U); // several leaves + inner level(s)
 
     // Touch exactly one key, flush, snapshot again.
-    uint64_t slot = 100000;
+    uint64_t slot = t.contiguous_slot() + 1;
     ASSERT_TRUE(t.apply(slot, put_one(key(7), "updated")).ok());
     t.force_advance_slot(slot);
     ASSERT_TRUE(t.flush().ok());
@@ -95,71 +138,58 @@ TEST(IncrementalCheckpoint, SingleKeyEditRewritesOnlyItsPath)
     EXPECT_LT(rewritten, total); // unchanged leaves/inners were retained
 }
 
-// Regression (plan-tree #14c/#14d/#18 D4): snapshot's dirty-tracking is
-// segment-level, not page-level -- confirm only the *dirty* segment(s) get a
-// fresh image written, not every present segment. With kSegmentSize == 1024
-// PIDs, a 200-key tree comfortably fits in one segment, so this also
-// exercises the single-segment steady-state case explicitly.
-TEST(IncrementalCheckpoint, OnlyDirtySegmentsAreRewritten)
+TEST(IncrementalCheckpoint, UnchangedCheckpointPreservesExactPageLocations)
 {
     MemPageStore store(1);
-    Config       opt;
-    opt.page_store       = &store;
-    opt.max_delta_len    = 1;
-    opt.leaf_split_bytes = 160;
-    opt.frame_bytes      = 4096;
-    Crowdbtree t(opt);
-
+    Config       options;
+    options.page_store       = &store;
+    options.leaf_split_bytes = 160;
+    options.frame_bytes      = 4096;
+    Crowdbtree                         tree(options);
     std::map<std::string, std::string> oracle;
-    fill(&t, 200, &oracle);
-
-    ASSERT_TRUE(t.snapshot(nullptr).ok());
-    uint64_t first_segments = t.last_snapshot_segments_written();
-    EXPECT_GE(first_segments, 1U); // first snapshot: at least the one segment in use
-
-    // No mutations -> no segment should need re-imaging.
-    ASSERT_TRUE(t.snapshot(nullptr).ok());
-    EXPECT_EQ(t.last_snapshot_segments_written(), 0U);
-
-    // A single-key edit still only touches PIDs within one segment (this
-    // tree never grows past kSegmentSize PIDs) -- expect exactly that one
-    // segment re-imaged, not zero and not "every segment".
-    uint64_t slot = 100000;
-    ASSERT_TRUE(t.apply(slot, put_one(key(7), "updated")).ok());
-    t.force_advance_slot(slot);
-    ASSERT_TRUE(t.flush().ok());
-    ASSERT_TRUE(t.snapshot(nullptr).ok());
-    EXPECT_EQ(t.last_snapshot_segments_written(), 1U);
+    fill(&tree, 200, &oracle);
+    ASSERT_TRUE(tree.snapshot().ok());
+    const auto before = durable_locations(tree);
+    ASSERT_GT(before.size(), 4U);
+    ASSERT_TRUE(tree.snapshot().ok());
+    EXPECT_EQ(durable_locations(tree), before);
+    EXPECT_EQ(tree.last_snapshot_pages_written(), 0U);
+    ASSERT_TRUE(tree.apply(tree.contiguous_slot() + 1, put_one(key(7), "updated")).ok());
+    ASSERT_TRUE(tree.snapshot().ok());
+    expect_untouched_locations(before, durable_locations(tree));
 }
 
-// Same regression, but with a tree big enough (kSegmentSize == 1024 PIDs per
-// segment) to actually span multiple mapping-table segments: a single-key
-// edit must re-image only the one segment holding the touched leaf's PID,
-// leaving every other segment's image/generation untouched.
-TEST(IncrementalCheckpoint, MultiSegmentTreeOnlyRewritesTouchedSegment)
+TEST(IncrementalCheckpoint, LargeTreeEditPreservesUntouchedPhysicalPages)
 {
     MemPageStore store(1);
-    Config       opt;
-    opt.page_store       = &store;
-    opt.max_delta_len    = 1;
-    opt.leaf_split_bytes = 160;
-    opt.frame_bytes      = 4096;
-    Crowdbtree t(opt);
-
+    Config       options;
+    options.page_store       = &store;
+    options.leaf_split_bytes = 160;
+    options.frame_bytes      = 4096;
+    Crowdbtree                         tree(options);
     std::map<std::string, std::string> oracle;
-    fill(&t, 3000, &oracle); // enough splits to allocate well past 1024 PIDs
-
-    ASSERT_TRUE(t.snapshot(nullptr).ok());
-    size_t total_segments = t.mapping().segments_allocated();
-    ASSERT_GT(total_segments, 1U) << "test needs a multi-segment tree to be meaningful";
-
-    uint64_t slot = 1000000;
-    ASSERT_TRUE(t.apply(slot, put_one(key(7), "updated")).ok());
-    t.force_advance_slot(slot);
-    ASSERT_TRUE(t.flush().ok());
-    ASSERT_TRUE(t.snapshot(nullptr).ok());
-    EXPECT_EQ(t.last_snapshot_segments_written(), 1U);
-    EXPECT_LT(t.last_snapshot_segments_written(), total_segments);
+    fill(&tree, 4096, &oracle);
+    const auto work          = RuntimeTreeAccess_for_tests::core(tree).publisher().work_metrics();
+    const auto before_splits = work->counters.snapshot()[static_cast<size_t>(TreeWorkCause::Checkpoint)]
+                                                        [static_cast<size_t>(TreeWorkCounter::SplitOperations)];
+    const auto started       = std::chrono::steady_clock::now();
+    const auto initial       = tree.snapshot();
+    const auto elapsed =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
+    ASSERT_TRUE(initial.ok()) << initial.to_string();
+    const auto windows = work->counters.snapshot()[static_cast<size_t>(TreeWorkCause::Checkpoint)]
+                                                  [static_cast<size_t>(TreeWorkCounter::SplitOperations)] -
+                         before_splits;
+    EXPECT_EQ(windows, 0U);
+    RecordProperty("checkpoint_split_transactions", std::to_string(windows));
+    RecordProperty("initial_checkpoint_ms", std::to_string(elapsed.count()));
+    const auto before = durable_locations(tree);
+    ASSERT_GT(before.size(), 1024U);
+    ASSERT_TRUE(tree.apply(tree.contiguous_slot() + 1, put_one(key(7), "updated")).ok());
+    const auto updated = tree.snapshot();
+    ASSERT_TRUE(updated.ok()) << updated.to_string();
+    expect_untouched_locations(before, durable_locations(tree));
+    EXPECT_LT(tree.last_snapshot_pages_written(), before.size());
 }
 
 TEST(IncrementalCheckpoint, SpaceIsReusedAcrossManyCheckpoints)
@@ -281,8 +311,7 @@ TEST(IncrementalCheckpoint, SnapshotPagesTotalAccumulates)
     EXPECT_EQ(t.stats().snapshot_pages_total, first_total);
 
     // Touch one key, flush, snapshot again: cumulative increases.
-    ASSERT_TRUE(t.apply(100000, put_one(key(7), "updated")).ok());
-    t.force_advance_slot(100000);
+    ASSERT_TRUE(t.apply(t.contiguous_slot() + 1, put_one(key(7), "updated")).ok());
     ASSERT_TRUE(t.flush().ok());
     ASSERT_TRUE(t.snapshot(nullptr).ok());
     uint64_t third_written = t.last_snapshot_pages_written();

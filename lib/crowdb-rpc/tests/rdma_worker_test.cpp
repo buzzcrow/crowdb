@@ -119,6 +119,7 @@ TEST(RdmaHardwareTest, RpcServerClientWorkerRoundTrip)
 
     if (role != nullptr && std::strcmp(role, "server") == 0) {
         RpcServer server(nullptr, 1, kWorkers);
+        ASSERT_TRUE(server.configure_rdma(RdmaConfig{}, true, false, true));
         ASSERT_TRUE(server.listen(address, port));
         std::atomic<uint32_t> received{0};
         std::atomic<bool>     client_finished{false};
@@ -153,6 +154,7 @@ TEST(RdmaHardwareTest, RpcServerClientWorkerRoundTrip)
     ASSERT_NE(role, nullptr);
     ASSERT_STREQ(role, "client");
     SocketTransport transport(1, kWorkers);
+    ASSERT_TRUE(transport.configure_rdma(RdmaConfig{}, true, false, false));
     transport.start();
     std::vector<std::shared_ptr<Connection>> connections;
     std::unordered_set<uint32_t>             qp_numbers;

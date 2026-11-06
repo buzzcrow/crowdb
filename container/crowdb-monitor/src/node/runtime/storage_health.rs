@@ -9,7 +9,7 @@ use std::{
 };
 
 use crowdb_console_shared::deployment::registry;
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient};
+use crowdb_paxos_kv_client::{ClientConfig, HardwareClient, PaxosKvClient};
 use crowdb_protocol::{common::HwStatus, key::DiskKey, mgmt::node::NodeBinding};
 
 use super::{durable, Result};
@@ -61,7 +61,7 @@ async fn observe(root: PathBuf, after: Option<String>) -> Result<Option<String>>
     let binding: NodeBinding =
         durable::read(&root.join("node-binding.json"))?.ok_or("disk health binding is absent")?;
     tokio::time::timeout(Duration::from_secs(3), super::verify_binding(&binding)).await??;
-    let client = CrowdbKvClient::new(ClientConfig::new(binding.management_seeds.clone()));
+    let client = PaxosKvClient::new(ClientConfig::new(binding.management_seeds.clone()));
     let (registry, _) = registry::read(&client)
         .await?
         .ok_or("disk health registry is absent")?;

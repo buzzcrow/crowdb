@@ -104,20 +104,21 @@ impl Partition {
         // An error can mean the CAS committed but its response was lost. Keep
         // this exact base and pins; rebuilding would change the durable proof.
         handoff.commit(&prepared.artifact).await?;
-        let (artifact, child) = self
+        let (artifact, child, tail_records) = self
             .install_child_cutover_session(
                 plan,
                 prepared.target.clone(),
                 prepared.base_checkpoint.clone(),
                 prepared.child_tree.clone(),
                 prepared.child_base,
+                prepared.artifact.parent_cutover_offset,
             )
             .await?;
         Ok(PreparedSplit {
             artifact,
             child,
             child_rebuild: prepared.child_rebuild,
-            delta_records: prepared.delta_records,
+            delta_records: prepared.delta_records.saturating_add(tail_records),
         })
     }
 

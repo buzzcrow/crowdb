@@ -20,6 +20,7 @@
 #include "crowdb-tree/status.h"
 
 #include <cstdint>
+#include <span>
 #include <vector>
 
 namespace crowdb::tree
@@ -36,6 +37,14 @@ inline constexpr size_t kDurableBlobHeader = 1 + 4 + 4 + 4;
 // Encode `frame[0,page_bytes)` into a durable blob, compressing with `prefer`
 // when it actually shrinks the page (else stored raw with algo = kNone).
 void encode_durable_page(const uint8_t *frame, uint32_t page_bytes, compress_algo prefer, std::vector<uint8_t> *out);
+
+// Allocation-free encoding into a caller-owned output window of at least
+// kDurableBlobHeader + frame.size() bytes. Input/output must not overlap.
+// Scratch includes codec-state alignment slack and may start at any address.
+// The returned logical length excludes any backend alignment padding.
+[[nodiscard]] size_t durable_encode_scratch_bytes(compress_algo prefer) noexcept;
+Status encode_durable_page_into(std::span<const uint8_t> frame, compress_algo prefer, std::span<uint8_t> output,
+                                std::span<uint8_t> scratch, uint32_t *logical_bytes);
 
 // Read the logical (raw, uncompressed) frame length recorded in a durable
 // blob's header, so a reader can size the decode buffer without knowing the

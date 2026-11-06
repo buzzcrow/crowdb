@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use crate::common::management::{addresses, client, origin, request};
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, GetOutcome, KvRpcTransport, ReadMode};
+use crowdb_paxos_kv_client::{ClientConfig, GetOutcome, PaxosKvClient, PaxosKvRpcTransport, ReadMode};
 use reqwest::{Client, Method};
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
@@ -40,7 +40,7 @@ async fn topology_and_follower_hint() {
         assert!(Instant::now() < deadline, "follower lacks leader hint: {topo}");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    let response = KvRpcTransport::new()
+    let response = PaxosKvRpcTransport::new()
         .send_put(
             &format!("http://{}:7001", ips[follower]),
             b"k",
@@ -56,7 +56,7 @@ async fn topology_and_follower_hint() {
     assert!(!response.ok);
     assert_eq!(response.error, "not leader");
     assert_eq!(response.not_leader_hint, format!("{}:7001", ips[leader]));
-    let kv = CrowdbKvClient::new(ClientConfig::new(Vec::new()));
+    let kv = PaxosKvClient::new(ClientConfig::new(Vec::new()));
     kv.seed_leader(10, 1, format!("{}:7001", ips[follower]));
     let first = kv.put(10, 1, b"redirect-one", b"one", None).await.unwrap();
     let second = kv.put(10, 1, b"redirect-two", b"two", None).await.unwrap();
@@ -102,7 +102,7 @@ async fn add_group(http: &Client, ips: &[String]) {
     }
 }
 
-async fn exact_value(kv: &CrowdbKvClient, group: u64, value: &[u8]) {
+async fn exact_value(kv: &PaxosKvClient, group: u64, value: &[u8]) {
     assert!(
         matches!(kv.get(0, group, b"shared-key", ReadMode::Linearizable, None).await.unwrap(),
         GetOutcome::Found {value: found, ..} if found.as_ref() == value)
@@ -117,7 +117,7 @@ async fn dynamic_groups_isolate_data() {
     add_group(&http, &ips).await;
     leader(&http, &ips, 1).await;
     leader(&http, &ips, 2).await;
-    let kv = CrowdbKvClient::new(ClientConfig::new(ips.iter().map(|ip| origin(ip)).collect()));
+    let kv = PaxosKvClient::new(ClientConfig::new(ips.iter().map(|ip| origin(ip)).collect()));
     for (group, value) in [(1, b"value-from-A"), (2, b"value-from-B")] {
         kv.put(0, group, b"shared-key", value, None).await.unwrap();
         exact_value(&kv, group, value).await;

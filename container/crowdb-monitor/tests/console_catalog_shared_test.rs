@@ -3,8 +3,8 @@
 
 #[path = "common/node_setup.rs"]
 mod node_setup;
-use crowdb_kv_client::{GetOutcome, ReadMode};
 use crowdb_monitor::IcebergBootstrap;
+use crowdb_paxos_kv_client::{GetOutcome, ReadMode};
 use crowdb_protocol::mgmt::node::setup::{NodeSetupChoices, NodeSetupRequest};
 use serde_json::json;
 use std::{fs, path::Path};

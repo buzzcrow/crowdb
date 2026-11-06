@@ -4,12 +4,7 @@
 //! Accepted startup inputs, distinct from discovered or confirmed membership.
 
 use super::setup::{NodeSetupChoices, SetupService, SetupServiceKind, SetupStorage};
-use crate::{
-    ACCESS_SERVER_DATASET_HTTP_BASE, ACCESS_SERVER_HEALTH_HTTP_BASE, ACCESS_SERVER_HTTP_BASE,
-    ACCESS_SERVER_ICEBERG_HTTP_BASE, CHUNKDB_HTTP_BASE, CHUNKDB_RPC_BASE, CHUNK_KV_HTTP_BASE,
-    CHUNK_KV_RPC_BASE, DISKDB_HTTP_BASE, DISKDB_LISTEN_BASE, DISKDB_RPC_BASE, DISKIO_RPC_BASE,
-    KV_SERVER_LISTEN_BASE, KV_SERVER_MGMT_BASE,
-};
+use crate::{ACCESS_SERVER_DATASET_HTTP_BASE, ACCESS_SERVER_HTTP_BASE, ACCESS_SERVER_ICEBERG_HTTP_BASE};
 use serde::{Deserialize, Serialize};
 
 mod public_access;
@@ -79,28 +74,27 @@ impl Default for NodeDeploymentPolicy {
             let listeners = &mut service.listeners;
             match service.kind {
                 SetupServiceKind::PaxosKv => {
-                    listeners.http_port = Some(KV_SERVER_MGMT_BASE);
-                    listeners.rpc_port = Some(KV_SERVER_LISTEN_BASE);
+                    listeners.http_port = Some(crate::PAXOS_KV_SERVER_MGMT_BASE);
+                    listeners.rpc_port = Some(crate::PAXOS_KV_SERVER_RPC_BASE);
                 }
                 SetupServiceKind::Diskdb => {
-                    listeners.listen_port = Some(DISKDB_LISTEN_BASE);
-                    listeners.http_port = Some(DISKDB_HTTP_BASE);
-                    listeners.rpc_port = Some(DISKDB_RPC_BASE);
+                    listeners.rpc_port = Some(crate::DISKDB_RPC_BASE);
+                    listeners.http_port = Some(crate::DISKDB_HTTP_BASE);
                 }
-                SetupServiceKind::Diskio => listeners.rpc_port = Some(DISKIO_RPC_BASE),
+                SetupServiceKind::Diskio => listeners.rpc_port = Some(crate::DISKIO_RPC_BASE),
                 SetupServiceKind::Chunkdb => {
-                    listeners.http_port = Some(CHUNKDB_HTTP_BASE);
-                    listeners.rpc_port = Some(CHUNKDB_RPC_BASE);
+                    listeners.http_port = Some(crate::CHUNKDB_HTTP_BASE);
+                    listeners.rpc_port = Some(crate::CHUNKDB_RPC_BASE);
                 }
                 SetupServiceKind::ChunkKv => {
-                    listeners.http_port = Some(CHUNK_KV_HTTP_BASE);
-                    listeners.rpc_port = Some(CHUNK_KV_RPC_BASE);
+                    listeners.http_port = Some(crate::CHUNK_KV_HTTP_BASE);
+                    listeners.rpc_port = Some(crate::CHUNK_KV_RPC_BASE);
                 }
                 SetupServiceKind::AccessServer => {
-                    listeners.s3_port = Some(ACCESS_SERVER_HTTP_BASE);
-                    listeners.http_port = Some(ACCESS_SERVER_ICEBERG_HTTP_BASE);
-                    listeners.dataset_port = Some(ACCESS_SERVER_DATASET_HTTP_BASE);
-                    listeners.health_port = Some(ACCESS_SERVER_HEALTH_HTTP_BASE);
+                    listeners.s3_port = Some(crate::ACCESS_SERVER_HTTP_BASE);
+                    listeners.http_port = Some(crate::ACCESS_SERVER_ICEBERG_HTTP_BASE);
+                    listeners.dataset_port = Some(crate::ACCESS_SERVER_DATASET_HTTP_BASE);
+                    listeners.health_port = Some(crate::ACCESS_SERVER_HEALTH_HTTP_BASE);
                 }
             }
         }
@@ -152,7 +146,6 @@ impl NodeDeploymentPolicy {
         for service in self.setup.services.iter().filter(|service| service.enabled) {
             let ports = &service.listeners;
             if [
-                ports.listen_port,
                 ports.http_port,
                 ports.rpc_port,
                 ports.s3_port,
@@ -161,7 +154,7 @@ impl NodeDeploymentPolicy {
             ]
             .into_iter()
             .flatten()
-            .any(|port| matches!(port, 2222 | 9090 | 9095))
+            .any(|port| [crate::SSH_PORT, crate::WEB_BASE, crate::MONITOR_HTTP_BASE].contains(&port))
             {
                 return Err("service listener conflicts with node management or bootstrap transport");
             }

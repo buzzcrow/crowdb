@@ -3,7 +3,7 @@
 
 //! Publish logical membership without overwriting a concurrent winner.
 
-use crowdb_kv_client::{
+use crowdb_paxos_kv_client::{
     BatchOp, Error as KvError, GetOutcome, GroupMembershipClient, GroupMembershipSnapshot, ReadMode,
 };
 use crowdb_protocol::common::{GroupValue, ReplicaValue, StoreValue};

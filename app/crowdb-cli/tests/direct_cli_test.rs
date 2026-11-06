@@ -8,7 +8,7 @@ fn retired_process_commands_and_selectors_fail_before_runtime_access() {
     let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("cli-removed-paths");
     for args in [
         vec!["launch", "list"],
-        vec!["kv", "server", "list"],
+        vec!["paxos-kv", "server", "list"],
         vec!["cluster", "init"],
         vec!["cluster", "local-deploy"],
         vec!["cluster", "destroy"],

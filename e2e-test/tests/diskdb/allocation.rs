@@ -202,7 +202,7 @@ async fn allocate_commit_and_free_through_client() {
         total_free_records_deleted += resp.total_free_records_deleted;
         assert!(
             resp.zones.iter().all(|z| z.success),
-            "all zone compaction results should be success for disk {did:?}"
+            "all zone compaction results should be success for disk {did:?}: {resp:?}"
         );
     }
 

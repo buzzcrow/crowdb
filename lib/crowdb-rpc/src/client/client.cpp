@@ -82,7 +82,6 @@ OutFrame *RpcClient::build_frame_chain(uint64_t request_id, Buffer *control, Buf
 // back to the pending map if the slot is occupied (slow request holding
 // it). The slab path is O(1) + zero heap alloc; the map path is one heap
 // alloc (std::function) — the overload fallback.
-// Flow: doc/design/rpc/rpc-flow-analysis.md § "Flow".
 bool RpcClient::send(Transport *transport, Connection *conn, uint64_t request_id, Buffer *control, Buffer *data,
                      uint16_t msg_type, crowdb_rpc_on_complete cb, void *user_data)
 {

@@ -22,11 +22,11 @@ class AccessDeploymentCluster(ChunkKvCluster):
             "server": [{"id": f"kv-{index + 1}", "url": origin, "node_id": index + 1,
                         "auto_start": False} for index, origin in enumerate(self.origins[:3])]})
         address = start_node(self, 12, data,
-            ("server", "web", "--bind", "0.0.0.0", "--port", "9090",
+            ("server", "web", "--bind", "0.0.0.0", "--port", "6135",
              "--ui-root", "/opt/crowdb/ui", "--log-dir", "/opt/crowdb/data/log/web"),
             environment=("CROWDB_RUNTIME_ROOT=/opt/crowdb/data",))
         self.addresses.append(address)
-        wait(lambda: HTTP.open(f"http://{address}:9090/healthz", timeout=5).read(),
+        wait(lambda: HTTP.open(f"http://{address}:6135/healthz", timeout=5).read(),
              lambda body: body == b"ok", "release Access deployment Web listener", seconds=20)
         return self
 

@@ -85,6 +85,11 @@ class Status
         return code_;
     }
 
+    [[nodiscard]] Status without_message() const noexcept
+    {
+        return {code_, {}};
+    }
+
     [[nodiscard]] const std::string &message() const
     {
         return msg_;

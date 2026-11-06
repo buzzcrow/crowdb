@@ -180,8 +180,8 @@ async fn authority(test: &TestMedium) -> node_setup::TestAuthority {
     };
     let authority = node_setup::TestAuthority::start(test.root.path(), &request).await;
     assert_eq!(authority.registry.nodes[0].physical_host_id, "owned-host");
-    let hardware = crowdb_kv_client::HardwareClient::new(crowdb_kv_client::CrowdbKvClient::new(
-        crowdb_kv_client::ClientConfig::new(authority.binding.management_seeds.clone()),
+    let hardware = crowdb_paxos_kv_client::HardwareClient::new(crowdb_paxos_kv_client::PaxosKvClient::new(
+        crowdb_paxos_kv_client::ClientConfig::new(authority.binding.management_seeds.clone()),
     ));
     hardware
         .add_rack(
@@ -232,13 +232,13 @@ async fn verified_medium_publishes_init_and_waits_for_real_diskio_without_reinit
     .await
     .unwrap();
     assert_eq!(first.phase, SuppliedPreparationPhase::WaitingForDiskio);
-    let crowdb_kv_client::GetOutcome::Found { value, .. } = authority
+    let crowdb_paxos_kv_client::GetOutcome::Found { value, .. } = authority
         .kv
         .get(
             0,
             0,
             test.record.key().as_bytes(),
-            crowdb_kv_client::ReadMode::Linearizable,
+            crowdb_paxos_kv_client::ReadMode::Linearizable,
             None,
         )
         .await
@@ -250,8 +250,8 @@ async fn verified_medium_publishes_init_and_waits_for_real_diskio_without_reinit
         serde_json::from_slice::<DiskStorageRecord>(&value).unwrap(),
         test.record
     );
-    let hardware = crowdb_kv_client::HardwareClient::new(crowdb_kv_client::CrowdbKvClient::new(
-        crowdb_kv_client::ClientConfig::new(authority.binding.management_seeds.clone()),
+    let hardware = crowdb_paxos_kv_client::HardwareClient::new(crowdb_paxos_kv_client::PaxosKvClient::new(
+        crowdb_paxos_kv_client::ClientConfig::new(authority.binding.management_seeds.clone()),
     ));
     let key = DiskKey {
         rack_id: 1,
@@ -292,8 +292,8 @@ async fn nonblank_provisioning_never_publishes_membership_and_changed_retry_cann
     .await
     .unwrap_err();
     assert!(error.to_string().contains("not blank"), "{error}");
-    let hardware = crowdb_kv_client::HardwareClient::new(crowdb_kv_client::CrowdbKvClient::new(
-        crowdb_kv_client::ClientConfig::new(authority.binding.management_seeds.clone()),
+    let hardware = crowdb_paxos_kv_client::HardwareClient::new(crowdb_paxos_kv_client::PaxosKvClient::new(
+        crowdb_paxos_kv_client::ClientConfig::new(authority.binding.management_seeds.clone()),
     ));
     let key = DiskKey {
         rack_id: 1,
@@ -391,12 +391,12 @@ async fn missing_target_group_fails_before_blank_scan_and_global_resource_claim(
             0,
             0,
             record.key().as_bytes(),
-            crowdb_kv_client::ReadMode::Linearizable,
+            crowdb_paxos_kv_client::ReadMode::Linearizable,
             None,
         )
         .await
         .unwrap();
-    assert!(matches!(resources, crowdb_kv_client::GetOutcome::NotFound));
+    assert!(matches!(resources, crowdb_paxos_kv_client::GetOutcome::NotFound));
     let physical = record.physical_backing.as_ref().unwrap();
     let encode = |text: &str| {
         text.as_bytes().iter().fold(String::new(), |mut encoded, byte| {
@@ -415,12 +415,12 @@ async fn missing_target_group_fails_before_blank_scan_and_global_resource_claim(
             0,
             0,
             path.as_bytes(),
-            crowdb_kv_client::ReadMode::Linearizable,
+            crowdb_paxos_kv_client::ReadMode::Linearizable,
             None,
         )
         .await
         .unwrap();
-    assert!(matches!(claim, crowdb_kv_client::GetOutcome::NotFound));
+    assert!(matches!(claim, crowdb_paxos_kv_client::GetOutcome::NotFound));
     assert!(
         fs::metadata(test.root.path().join("disks/owned.img"))
             .unwrap()

@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use crowdb_common::config::BaseConfig;
-use crowdb_protocol::{DISKDB_HTTP_BASE, DISKDB_LISTEN_BASE, DISKDB_RPC_BASE, KV_SERVER_MGMT_BASE};
+use crowdb_protocol::{DISKDB_HTTP_BASE, DISKDB_RPC_BASE, PAXOS_KV_SERVER_MGMT_BASE};
 use serde::{Deserialize, Serialize};
 
 /// Top-level configuration for a diskdb instance.
@@ -40,24 +40,21 @@ impl BaseConfig for DdbConfig {
     }
 }
 
-/// main listener + HTTP + crowdb-rpc listen addresses.
+/// HTTP management and crowdb-rpc listen addresses.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ServerConfig {
     /// static: crowdb-rpc I/O workers serving this process.
     #[serde(default = "default_rpc_workers")]
     pub rpc_workers: u32,
-    /// static: main listen address.
-    pub listen_addr: String,
     /// static: HTTP management listen address.
     pub http_listen_addr: String,
-    /// static: crowdb-rpc listen address (R115 migration — runs alongside
-    /// the main listener during the mixed-rollout window).
+    /// static: crowdb-rpc listen address.
     pub rpc_listen_addr: String,
     /// static: unique instance ID (auto-generated UUID if absent).
     pub instance_id: Option<String>,
     /// static: HTTP management-API seed endpoints (`http://host:port`)
-    /// of the crowdb-kv-server(s) used to discover the system group
+    /// of the crowdb-paxos-kv-server(s) used to discover the system group
     /// (store 0, group 0) leader and, via `/topology`, the data-group
     /// leaders. The client refreshes this lazily on first use, so the
     /// leader does not need to be pre-seeded. At least one must be
@@ -87,11 +84,10 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             rpc_workers: default_rpc_workers(),
-            listen_addr: format!("0.0.0.0:{DISKDB_LISTEN_BASE}"),
             http_listen_addr: format!("0.0.0.0:{DISKDB_HTTP_BASE}"),
             rpc_listen_addr: format!("0.0.0.0:{DISKDB_RPC_BASE}"),
             instance_id: None,
-            kv_server_mgmt_seeds: vec![format!("http://127.0.0.1:{KV_SERVER_MGMT_BASE}")],
+            kv_server_mgmt_seeds: vec![format!("http://127.0.0.1:{PAXOS_KV_SERVER_MGMT_BASE}")],
             kv_pool_size: default_kv_pool_size(),
             kv_rpc_workers: default_kv_rpc_workers(),
         }
@@ -461,12 +457,6 @@ pub fn validate(config: &DdbConfig) -> Result<(), String> {
     }
     if config.persistence.load_concurrency == 0 {
         return Err("load_concurrency must be > 0".to_string());
-    }
-    if config.server.listen_addr.parse::<SocketAddr>().is_err() {
-        return Err(format!(
-            "listen_addr {:?} is not a valid SocketAddr",
-            config.server.listen_addr,
-        ));
     }
     if config.server.http_listen_addr.parse::<SocketAddr>().is_err() {
         return Err(format!(

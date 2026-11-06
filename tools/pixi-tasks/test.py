@@ -13,9 +13,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 RUST_GROUPS = {
-    "core": ("common", "test-harness", "protocol", "kv", "kv-client"),
+    "core": ("common", "test-harness", "protocol", "paxos-kv", "paxos-kv-client"),
     "storage": ("chunkdb-client", "chunk-kv", "chunk-kv-client", "chunk-kv-server",
-                "chunk-stream", "kv-server", "diskdb", "diskdb-client", "chunkdb",
+                "chunk-stream", "paxos-kv-server", "diskdb", "diskdb-client", "chunkdb",
                 "chunk-client", "diskio-client"),
     "access": ("access-multipart", "access-s3", "sdk-native", "sdk-native-python",
                "access-iceberg", "access-server", "access-dataset", "monitor"),
@@ -111,7 +111,7 @@ def unit(group):
     if group == "console":
         # Test-only native measurement ownership is separate from product OCI acceptance.
         measurement.run("console", ["cargo", "build", "--locked", "-p", "crowdb-cli",
-                                    "-p", "crowdb-kv-server", "-p", "crowdb-console-shared",
+                                    "-p", "crowdb-paxos-kv-server", "-p", "crowdb-console-shared",
                                     "--features", "crowdb-console-shared/test-util", "--bins",
                                     "--example", "regression-fixture"], env=rust_test_environment())
         measurement.run("console", ["python", "tools/benchmark/fixture-smoke.py", "--worker",

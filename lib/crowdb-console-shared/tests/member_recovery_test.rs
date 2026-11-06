@@ -123,7 +123,7 @@ async fn pinned_identity_survives_endpoint_changes_without_address_tofu() {
     let dir = tempdir_in_test_data("member-recovery-move");
     let address_cache = dir.path().join("address-cache");
     std::fs::write(&address_cache, "deliberately invalid address-keyed trust").unwrap();
-    std::env::set_var("CROWDB_KV_KNOWN_HOSTS", &address_cache);
+    std::env::set_var("CROWDB_PAXOS_KV_KNOWN_HOSTS", &address_cache);
     let key = KeyPair::generate_ed25519().unwrap();
     let host = KeyPair::generate_ed25519().unwrap();
     let trust = recovery::trust(&host);

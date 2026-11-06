@@ -36,6 +36,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .join("crowdb-common")
         .join("cpp")
         .join("include");
+    let protocol_include = engine
+        .parent()
+        .ok_or("engine dir must have a parent lib dir")?
+        .join("crowdb-protocol/cpp/include");
 
     let mut sources = Vec::new();
     collect_cpp(&src, &mut sources)?;
@@ -117,6 +121,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .flag_if_supported("-Wno-sign-compare")
         .include(&include)
         .include(&common_include)
+        .include(&protocol_include)
         .files(sources.iter().map(|p| p.as_path()).collect::<Vec<_>>());
 
     // Enable spdlog in the C++ build (gates CR_LOG_* macros).
@@ -261,6 +266,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed={}", src.display());
     println!("cargo:rerun-if-changed={}", include.display());
     println!("cargo:rerun-if-changed={}", common_include.display());
+    println!("cargo:rerun-if-changed={}", protocol_include.display());
 
     Ok(())
 }

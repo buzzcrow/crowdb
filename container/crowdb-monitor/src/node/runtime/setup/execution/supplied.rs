@@ -8,7 +8,7 @@ use super::{
     storage, Result,
 };
 use crate::DeploymentProfile;
-use crowdb_kv_client::{CrowdbKvClient, HardwareClient};
+use crowdb_paxos_kv_client::{HardwareClient, PaxosKvClient};
 use crowdb_protocol::{
     common::{DiskId, HwStatus},
     disk_storage::{DiskStorageRecord, PhysicalBacking},
@@ -29,7 +29,7 @@ pub(super) async fn advance(
     profile: &DeploymentProfile,
     state: &mut AcceptedSetup,
     binding: &NodeBinding,
-    kv: &Arc<CrowdbKvClient>,
+    kv: &Arc<PaxosKvClient>,
 ) -> Result<bool> {
     if state.supplied.is_empty() {
         prepare(profile, state, binding, kv).await?;
@@ -102,7 +102,7 @@ async fn prepare(
     profile: &DeploymentProfile,
     state: &mut AcceptedSetup,
     binding: &NodeBinding,
-    kv: &Arc<CrowdbKvClient>,
+    kv: &Arc<PaxosKvClient>,
 ) -> Result<()> {
     let SetupStorage::Supplied { disks } = &state.request.choices.storage else {
         return Err("supplied setup choices missing".into());

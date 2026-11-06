@@ -977,7 +977,9 @@ impl ChunkdbRpcService {
                 return;
             };
 
-            let result = handler.delete_chunk(&chunk_id).await;
+            let result = handler
+                .delete_chunk_fenced(&chunk_id, fb_req.fence_missing())
+                .await;
             if result.is_ok() {
                 request.mark_success();
             }

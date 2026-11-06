@@ -4,6 +4,7 @@
 #include "crowdb-common/metrics/metrics.h"
 #include "rpc/dio_read_buffer.h"
 #include "rpc/dio_request.h"
+#include "rpc/dio_request_deadline.h"
 #include "rpc/dio_server.h"
 
 #include <msg_type_generated.h>
@@ -23,12 +24,28 @@ crowdb::rpc::OutFrame *DiskioServer::handle_read(crowdb::rpc::Frame *request, cr
 {
     uint64_t req_id      = request->request_id;
     uint64_t create_nano = request->rpc_create_nano;
-    uint16_t msg_type    = static_cast<uint16_t>(rproto::FBMsgType_EDiskReadResponse);
+    auto     msg_type    = static_cast<uint16_t>(rproto::FBMsgType_EDiskReadResponse);
 
-    auto *fb_req = decode_disk_request<dproto::FBDiskReadRequest>(*request);
+    const auto *fb_req = decode_disk_request<dproto::FBDiskReadRequest>(*request);
     if (fb_req == nullptr || (request->data_buf != nullptr && request->data_buf->len != 0)) {
         delete request;
         send_error_response(conn, req_id, create_nano, msg_type, static_cast<int16_t>(dproto::FBDiskIoRetCode_IoError));
+        return nullptr;
+    }
+    const bool read_age_checked = fb_req->read_create_time_ms() != 0;
+    const auto deadline = read_age_checked ? request_deadline(fb_req->read_create_time_ms(), max_write_request_age_ms_,
+                                                              max_clock_skew_ms_)
+                                           : std::nullopt;
+    if ((read_age_checked && !deadline) || (fb_req->fence_probe() && (!read_age_checked || fb_req->size() != 0))) {
+        delete request;
+        send_error_response(conn, req_id, create_nano, msg_type,
+                            static_cast<int16_t>(dproto::FBDiskIoRetCode_OldRequest));
+        return nullptr;
+    }
+    if (fb_req->fence_probe()) {
+        delete request;
+        send_response(transport_, conn->weak_from_this().lock(), req_id, create_nano, msg_type,
+                      static_cast<int16_t>(dproto::FBDiskIoRetCode_Success), nullptr, false, true);
         return nullptr;
     }
     DiskId   did                 = parse_disk_id(fb_req->disk_id());
@@ -67,7 +84,15 @@ crowdb::rpc::OutFrame *DiskioServer::handle_read(crowdb::rpc::Frame *request, cr
         root->ownership.load(std::memory_order_acquire) == crowdb::rpc::BufferOwnership::CallerOwned;
     // Control has been decoded, and READ carries no input payload. Retain its
     // existing receive data region until disk and response SEND both finish.
-    auto *read_buf = registered ? (receive_owned ? root->slice(0, size) : nullptr) : conn->pool()->alloc(size);
+    crowdb::rpc::Buffer *read_buf = nullptr;
+    if (registered) {
+        if (receive_owned) {
+            read_buf = root->slice(0, size);
+        }
+    }
+    else {
+        read_buf = conn->pool()->alloc(size);
+    }
     if (read_buf == nullptr) {
         delete request;
         send_error_response(conn, req_id, create_nano, msg_type, static_cast<int16_t>(dproto::FBDiskIoRetCode_IoError));
@@ -82,26 +107,36 @@ crowdb::rpc::OutFrame *DiskioServer::handle_read(crowdb::rpc::Frame *request, cr
         send_error_response(conn, req_id, create_nano, msg_type, static_cast<int16_t>(aligned));
         return nullptr;
     }
+    if (deadline && std::chrono::steady_clock::now() >= *deadline) {
+        read_buf->release();
+        send_error_response(conn, req_id, create_nano, msg_type,
+                            static_cast<int16_t>(dproto::FBDiskIoRetCode_OldRequest));
+        return nullptr;
+    }
     if (!io.begin()) {
         conn->close();
         return nullptr;
     }
-    Disk *disk_ptr = disk.get();
-    auto  started  = std::chrono::steady_clock::now();
-    auto *io_data  = io.data();
-    disk_ptr->engine()->submit_read(disk_ptr, io.offset, io_data, io.io_size, test_pattern_offset,
+    Disk      *disk_ptr  = disk.get();
+    auto       started   = std::chrono::steady_clock::now();
+    auto      *io_data   = io.data();
+    const auto io_offset = io.offset;
+    const auto io_size   = io.io_size;
+    disk_ptr->engine()->submit_read(disk_ptr, io_offset, io_data, io_size, test_pattern_offset,
                                     [transport = transport_, connection = conn->weak_from_this().lock(),
                                      latency = read_latency_, req_id, create_nano, msg_type, io = std::move(io),
-                                     disk = std::move(disk), started](int result) mutable {
+                                     disk = std::move(disk), started, read_age_checked](int result) mutable {
                                         latency->observe(elapsed_nanos(started));
                                         const auto completed = io.finish(result);
                                         if (!completed.valid_owner) {
-                                            if (connection != nullptr)
+                                            if (connection != nullptr) {
                                                 connection->close();
+                                            }
                                             return;
                                         }
                                         send_response(transport, connection, req_id, create_nano, msg_type,
-                                                      static_cast<int16_t>(completed.code), completed.data);
+                                                      static_cast<int16_t>(completed.code), completed.data, false,
+                                                      read_age_checked);
                                     });
 
     return nullptr;

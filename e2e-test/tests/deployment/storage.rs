@@ -1,8 +1,9 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, CrowdbSysmdClient};
 use crowdb_monitor::{verify_chunk_services, DeploymentProfile};
+use crowdb_paxos_kv_client::{ClientConfig, CrowdbSysmdClient, PaxosKvClient};
+use crowdb_protocol::port::ports::{ACCESS_SERVER_ICEBERG_HTTP_BASE, PAXOS_KV_SERVER_MGMT_BASE};
 use std::path::PathBuf;
 
 fn root() -> PathBuf {
@@ -10,7 +11,10 @@ fn root() -> PathBuf {
 }
 
 fn seed() -> String {
-    format!("http://{}:10000", crate::common::management::addresses(1)[0])
+    format!(
+        "http://{}:{PAXOS_KV_SERVER_MGMT_BASE}",
+        crate::common::management::addresses(1)[0]
+    )
 }
 
 #[tokio::test]
@@ -50,7 +54,7 @@ async fn chunk_services_validate_live_registration_and_logical_topology() {
 }
 
 async fn verify_logical_topology() {
-    let sysmd = CrowdbSysmdClient::new(CrowdbKvClient::new(ClientConfig::new(vec![seed()])));
+    let sysmd = CrowdbSysmdClient::new(PaxosKvClient::new(ClientConfig::new(vec![seed()])));
     assert_eq!(sysmd.list_stores().await.unwrap().len(), 1);
     let initial = sysmd.list_groups_in_store(0).await.unwrap();
     assert_eq!(initial.len(), 2);
@@ -70,7 +74,10 @@ async fn real_iceberg_catalog_and_listener_survive_restart() {
         .lines()
         .find_map(|line| line.strip_prefix("ICEBERG_TOKEN="))
         .unwrap();
-    let origin = format!("http://{}:9092", crate::common::management::addresses(1)[0]);
+    let origin = format!(
+        "http://{}:{ACCESS_SERVER_ICEBERG_HTTP_BASE}",
+        crate::common::management::addresses(1)[0]
+    );
     let client = reqwest::Client::new();
     let config = client
         .get(format!("{origin}/v1/config"))

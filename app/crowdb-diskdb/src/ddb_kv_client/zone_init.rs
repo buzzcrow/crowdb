@@ -8,7 +8,8 @@ use super::{
     ZoneKey, ZoneValue, ZoneValueExt,
 };
 
-pub const MAX_ZONE_INIT_BATCH: usize = 128;
+// Each proposal must also fit the native tree's reserved gap-repair window.
+pub const MAX_ZONE_INIT_BATCH: usize = 64;
 
 impl DdbKvClient {
     /// Any snapshot, live allocation or free fact requires ordinary recovery.
@@ -49,9 +50,9 @@ impl DdbKvClient {
     /// Rejects an empty or oversized batch and propagates ownership or write failures.
     pub async fn put_zone_batch(&self, bind: Bind, disk: &DiskId, values: &[(u32, ZoneValue)]) -> Result<()> {
         if values.is_empty() || values.len() > MAX_ZONE_INIT_BATCH {
-            return Err(crowdb_kv_client::Error::Server(
-                "zone initialization batch must contain 1..=128 records".into(),
-            ));
+            return Err(crowdb_paxos_kv_client::Error::Server(format!(
+                "zone initialization batch must contain 1..={MAX_ZONE_INIT_BATCH} records"
+            )));
         }
         let ops: Vec<_> = values
             .iter()

@@ -7,8 +7,8 @@
 #![allow(dead_code)]
 
 use axum::{extract::State, routing::get, Json, Router};
-use crowdb_kv::cluster::group::PxGroup;
-use crowdb_kv::cluster::{KvServer, PxKvStore, PxLocalReplica, PxLocalReplicaRole};
+use crowdb_paxos_kv::cluster::group::PxGroup;
+use crowdb_paxos_kv::cluster::{PaxosKvServer, PxKvStore, PxLocalReplica, PxLocalReplicaRole};
 use std::sync::Arc;
 
 pub(crate) struct TestKvCluster {

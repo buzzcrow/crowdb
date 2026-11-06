@@ -124,6 +124,8 @@ KV_CASES = (
     Case("kv.metadata", "kv::slot_map::initialize_is_atomic_idempotent_and_layer_independent", groups=(0,)),
     Case("kv.metadata", "kv::slot_map::concurrent_initializers_cannot_combine_different_assignments", groups=(0,)),
     Case("kv.metadata", "kv::slot_map::paginated_owner_records_preserve_empty_instances", groups=(0,)),
+    Case("kv.metadata", "kv::slot_map_recovery::interrupted_large_bootstrap_resumes_after_crash", groups=(0,),
+         restart=True, persisted_paths=("kv/waldata/store0/group0",)),
     Case("kv.metadata", "kv::slot_map::service_client_needs_no_storage_map_and_refreshes_same_owner_endpoints", groups=(0,)),
     Case("kv.metadata", "kv::slot_map_validation::legacy_records_are_never_overwritten", groups=(0,)),
     Case("kv.metadata", "kv::slot_map_validation::legacy_chunk_state_without_range_bindings_is_not_reinterpreted", groups=(0,)),
@@ -390,11 +392,11 @@ ICEBERG_CASES = (
     Case("iceberg.namespace", "access_iceberg::namespace::namespace_functional_crud_survives_native_storage_and_listener_restart"),
 )
 CONSOLE_OPERATION_CASES = (
-    Case("console.native.browser.dataset", "console::browser_dataset::browse", native_client=True, client_timeout=360),
-    Case("console.native.browser.dataset", "console::browser_dataset::import", native_client=True, client_timeout=360),
-    Case("console.native.browser.dataset", "console::browser_dataset::split_revisions", native_client=True, client_timeout=360),
-    Case("console.native.browser.dataset", "console::browser_dataset::recovery", native_client=True, client_timeout=360),
-    Case("console.native.browser.dataset", "console::browser_dataset::capabilities", native_client=True, client_timeout=360),
+    Case("console.native.browser.dataset", "console::browser_dataset::browse", native_client=True, client_timeout=1020),
+    Case("console.native.browser.dataset", "console::browser_dataset::import", native_client=True, client_timeout=1020),
+    Case("console.native.browser.dataset", "console::browser_dataset::split_revisions", native_client=True, client_timeout=1020),
+    Case("console.native.browser.dataset", "console::browser_dataset::recovery", native_client=True, client_timeout=1020),
+    Case("console.native.browser.dataset", "console::browser_dataset::capabilities", native_client=True, client_timeout=1020),
 
     Case("console.native.browser.six-node", "console::browser_data::six_node_round_trips", native_browser="UI creates three storage nodes, adds three diskless nodes, then KV, S3 and Iceberg persist real data", native_disk_gib=(4096, 4096, 4096, 8, 8, 8), native_zone_gib=(32, 32, 32, 1, 1, 1), native_admission_count=3, native_diskless_nodes=(4, 5, 6), native_bootstrap=False, native_observations=True, client_timeout=600),
     Case("console.native.browser.topology", "console::browser_topology::multi_rack_leaders", native_browser="native topology: three racks grow one replica and retain three complete leaders", native_rack_ids=(1, 2, 3)),

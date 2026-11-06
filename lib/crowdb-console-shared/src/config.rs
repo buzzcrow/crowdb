@@ -123,7 +123,7 @@ pub struct NodeEntry {
 }
 
 fn default_ssh_port() -> u16 {
-    22
+    crowdb_protocol::port::ports::HOST_SSH_PORT
 }
 
 impl NodeEntry {
@@ -185,14 +185,14 @@ pub enum ServiceType {
 pub struct ServerEntry {
     /// Console-side identifier; must be unique within an operation context.
     pub id: String,
-    /// Service URL. For KV this is the `crowdb-kv-server` management base
+    /// Service URL. For KV this is the `crowdb-paxos-kv-server` management base
     /// URL; for `DiskDB` this is its public crowdb-rpc endpoint.
     pub url: String,
     /// Owning node id; populated for console-deployed instances. `None`
     /// for plain "registered external server" entries from C2.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_id: Option<NodeId>,
-    /// crowdb-rpc base URL, e.g. `http://127.0.0.1:10100`. Populated for
+    /// crowdb-rpc base URL, e.g. `http://127.0.0.1:11135`. Populated for
     /// console-deployed instances.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rpc_url: Option<String>,
@@ -214,11 +214,11 @@ pub struct ServerEntry {
     /// Service type discriminator. KV is the default for local fixtures.
     #[serde(default, skip_serializing_if = "is_default_service_type")]
     pub service_type: ServiceType,
-    /// `--rpc-workers` value passed to the spawned `crowdb-kv-server`.
+    /// `--rpc-workers` value passed to the spawned `crowdb-paxos-kv-server`.
     /// `None` means the server's default (2) is used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rpc_workers: Option<u32>,
-    /// `--no-fsync` flag passed to the spawned `crowdb-kv-server`.
+    /// `--no-fsync` flag passed to the spawned `crowdb-paxos-kv-server`.
     /// Persisted so restart reuses the same value.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub no_fsync: bool,

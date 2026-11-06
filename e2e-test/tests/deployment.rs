@@ -1,7 +1,8 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{ClientConfig, GetOutcome, PaxosKvClient, ReadMode};
+use crowdb_protocol::port::ports::PAXOS_KV_SERVER_MGMT_BASE;
 mod anonymous;
 mod balance;
 mod bootstrap;
@@ -29,9 +30,10 @@ async fn selected_kv_services_recover_acknowledged_data() {
 async fn selected_storage_services_recover_acknowledged_data() {
     witness(false).await;
     let address = crate::common::management::addresses(1)[0].clone();
-    let registry = crowdb_kv_client::ServiceRegistryClient::new(CrowdbKvClient::new(ClientConfig::new(
-        vec![format!("http://{address}:10000")],
-    )));
+    let registry =
+        crowdb_paxos_kv_client::ServiceRegistryClient::new(PaxosKvClient::new(ClientConfig::new(vec![
+            format!("http://{address}:{PAXOS_KV_SERVER_MGMT_BASE}"),
+        ])));
     let instances = registry.read_all_diskdb_instances().await.unwrap();
     assert_eq!(instances.len(), 1);
     assert_eq!(instances[0].0, 1);
@@ -53,7 +55,10 @@ async fn witness(storage: bool) {
 
 async fn witness_with_write(storage: bool, write: bool) {
     let addresses: Vec<String> = serde_json::from_str(&std::env::var("CROWDB_E2E_RPC").unwrap()).unwrap();
-    let client = CrowdbKvClient::new(ClientConfig::new(vec![format!("http://{}:10000", addresses[0])]));
+    let client = PaxosKvClient::new(ClientConfig::new(vec![format!(
+        "http://{}:{PAXOS_KV_SERVER_MGMT_BASE}",
+        addresses[0]
+    )]));
     let token = std::env::var("CROWDB_E2E_TOKEN").unwrap();
     if write {
         let outcome = client
@@ -63,8 +68,8 @@ async fn witness_with_write(storage: bool, write: bool) {
         assert!(outcome.revision > 0);
     }
     let hardware =
-        crowdb_kv_client::HardwareClient::new(CrowdbKvClient::new(ClientConfig::new(vec![format!(
-            "http://{}:10000",
+        crowdb_paxos_kv_client::HardwareClient::new(PaxosKvClient::new(ClientConfig::new(vec![format!(
+            "http://{}:{PAXOS_KV_SERVER_MGMT_BASE}",
             addresses[0]
         )])));
     let disks = hardware.list_all_disks().await.unwrap();

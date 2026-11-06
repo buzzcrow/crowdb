@@ -8,7 +8,7 @@ use crowdb_protocol::chunk_kv::{
     ChunkKvRangeBalancePolicy, DomainFailurePolicy, DomainMonitorDescriptor, Id128,
 };
 use crowdb_protocol::chunk_stream::StreamName;
-use crowdb_protocol::{CHUNK_KV_HTTP_BASE, CHUNK_KV_RPC_BASE, KV_SERVER_MGMT_BASE};
+use crowdb_protocol::{CHUNK_KV_HTTP_BASE, CHUNK_KV_RPC_BASE, PAXOS_KV_SERVER_MGMT_BASE};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -41,6 +41,9 @@ pub struct ChunkKvServerConfig {
     pub rpc_workers: u32,
     pub rpc_rdma: Option<crowdb_rpc_ffi::RdmaConfig>,
     pub storage: StorageConfig,
+    pub partition: crowdb_chunk_kv::PartitionConfig,
+    pub tree_runtime: crowdb_tree_ffi::TreeRuntimeConfig,
+    pub tree: crowdb_tree_ffi::TreeEngineConfig,
     pub bootstrap_partition: Option<BootstrapPartitionConfig>,
     pub monitor: DomainMonitorDescriptor,
     pub balance: BalanceConfig,
@@ -55,7 +58,7 @@ impl Default for ChunkKvServerConfig {
             rpc_advertise_addr: format!("127.0.0.1:{CHUNK_KV_RPC_BASE}"),
             http_listen_addr: format!("0.0.0.0:{CHUNK_KV_HTTP_BASE}"),
             http_advertise_addr: None,
-            group0_mgmt_seeds: vec![format!("http://127.0.0.1:{KV_SERVER_MGMT_BASE}")],
+            group0_mgmt_seeds: vec![format!("http://127.0.0.1:{PAXOS_KV_SERVER_MGMT_BASE}")],
             max_hosted_partitions: 256,
             catalog_refresh_interval_ms: 5_000,
             max_split_catchup_lag_records: 1_024,
@@ -63,6 +66,9 @@ impl Default for ChunkKvServerConfig {
             rpc_workers: 2,
             rpc_rdma: None,
             storage: StorageConfig::default(),
+            partition: crowdb_chunk_kv::PartitionConfig::default(),
+            tree_runtime: crowdb_tree_ffi::TreeRuntimeConfig::default(),
+            tree: crowdb_tree_ffi::TreeEngineConfig::default(),
             bootstrap_partition: None,
             monitor: default_monitor(),
             balance: BalanceConfig::default(),
@@ -71,6 +77,17 @@ impl Default for ChunkKvServerConfig {
 }
 
 impl ChunkKvServerConfig {
+    /// Build native engine and per-partition limits; the process runtime is attached by storage.
+    #[must_use]
+    pub fn native_tree_options(&self) -> crowdb_tree_ffi::Config {
+        let mut options = crowdb_tree_ffi::Config {
+            runtime_binding: self.tree_runtime.binding_options(),
+            ..Default::default()
+        };
+        self.tree.apply_to(&mut options);
+        options
+    }
+
     /// Loads a TOML configuration file and applies field defaults.
     ///
     /// # Errors
@@ -131,7 +148,11 @@ impl ChunkKvServerConfig {
                 "partition capacity and lifecycle intervals must be nonzero".into(),
             ));
         }
+        self.validate_tree_config()?;
         self.storage.validate()?;
+        self.partition
+            .validate()
+            .map_err(|error| ConfigError::Invalid(error.to_string()))?;
         if self
             .rpc_rdma
             .as_ref()
@@ -160,6 +181,25 @@ impl ChunkKvServerConfig {
         if self.monitor.chunk_kv_range_balance != expected_balance_policy {
             return Err(ConfigError::Invalid(
                 "monitor and server balance policy differ".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_tree_config(&self) -> Result<(), ConfigError> {
+        self.tree_runtime.validate().map_err(ConfigError::Invalid)?;
+        self.tree
+            .validate(&self.tree_runtime)
+            .map_err(ConfigError::Invalid)?;
+        let iu = if self.tree.iu_size == 0 {
+            64 * 1024
+        } else {
+            self.tree.iu_size
+        };
+        if self.tree.frame_bytes % iu != 0 {
+            return Err(ConfigError::Invalid(
+                "tree.frame_bytes must align to the Chunk backend IU (64 KiB when tree.iu_size is zero)"
+                    .to_owned(),
             ));
         }
         Ok(())
@@ -199,6 +239,7 @@ pub struct StorageConfig {
     pub stream_mirror_copies: u32,
     pub tree_chunk_capacity_bytes: u64,
     pub tree_strip_capacity_bytes: u32,
+    pub tree_pin_release_slots: usize,
     pub stream_chunk_capacity_bytes: u64,
     pub diskio_connections_per_endpoint: usize,
     pub diskio_rpc_workers: u32,
@@ -212,6 +253,7 @@ impl Default for StorageConfig {
             stream_mirror_copies: 2,
             tree_chunk_capacity_bytes: 256 * 1024 * 1024,
             tree_strip_capacity_bytes: 0,
+            tree_pin_release_slots: 1_048_576,
             stream_chunk_capacity_bytes: 256 * 1024 * 1024,
             diskio_connections_per_endpoint: 1,
             diskio_rpc_workers: 2,
@@ -221,6 +263,11 @@ impl Default for StorageConfig {
 
 impl StorageConfig {
     fn validate(&self) -> Result<(), ConfigError> {
+        if self.tree_pin_release_slots == 0 || self.tree_pin_release_slots > usize::MAX / 2 {
+            return Err(ConfigError::Invalid(
+                "storage.tree_pin_release_slots must fit a nonzero native queue capacity".into(),
+            ));
+        }
         if self.stream_writer_lease_ms == 0
             || self.stream_mirror_copies == 0
             || self.stream_mirror_copies > 5

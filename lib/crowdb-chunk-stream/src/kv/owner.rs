@@ -7,8 +7,8 @@ use super::{kv_error, KvStreamRegistry};
 use crate::{Result, StreamError, StreamName, StreamOwnerAuthority, StreamWriterSession};
 use arc_swap::ArcSwapOption;
 use async_trait::async_trait;
-use crowdb_kv_client::{
-    CrowdbKvClient, GetOutcome, ReadMode, StreamProcessAuthority, StreamProcessLeaseClient,
+use crowdb_paxos_kv_client::{
+    GetOutcome, PaxosKvClient, ReadMode, StreamProcessAuthority, StreamProcessLeaseClient,
     StreamProcessLeaseError, StreamProcessLeaseTiming,
 };
 use crowdb_protocol::{
@@ -176,7 +176,7 @@ impl KvStreamRegistry {
 }
 
 struct AssignedOwner {
-    kv: Arc<CrowdbKvClient>,
+    kv: Arc<PaxosKvClient>,
     process: Arc<ProcessOwner>,
     owner: StreamWriterOwner,
 }
@@ -209,7 +209,7 @@ impl StreamOwnerAuthority for AssignedOwner {
 }
 
 async fn exclude_previous(
-    kv: &Arc<CrowdbKvClient>,
+    kv: &Arc<PaxosKvClient>,
     current: &StreamProcessAuthority,
     owner: &StreamWriterOwner,
 ) -> Result<u64> {
@@ -245,14 +245,23 @@ async fn exclude_previous(
         let safe = expiry
             .saturating_add(MAX_WRITE_CLOCK_SKEW_MS)
             .saturating_add(MAX_WRITE_REQUEST_AGE_MS);
-        if wall_ms() >= safe {
+        if wall_ms() >= safe
+            && client
+                .confirm_exclusion(owner.process, wall_ms())
+                .await
+                .map_err(|error| StreamError::ReadUnavailable(error.to_string()))?
+                .is_some()
+        {
             return Ok(revision);
         }
-        tokio::time::sleep(Duration::from_millis((safe - wall_ms()).min(500))).await;
+        tokio::time::sleep(Duration::from_millis(
+            safe.saturating_sub(wall_ms()).clamp(1, 500),
+        ))
+        .await;
     }
 }
 
-async fn read_owner(kv: &CrowdbKvClient, name: StreamName) -> Result<Option<(StreamWriterOwner, u64)>> {
+async fn read_owner(kv: &PaxosKvClient, name: StreamName) -> Result<Option<(StreamWriterOwner, u64)>> {
     let key = StreamWriterOwnerKey { stream_name: name }.to_path();
     match kv
         .get(0, 0, key.as_bytes(), ReadMode::Linearizable, None)
@@ -271,7 +280,7 @@ async fn read_owner(kv: &CrowdbKvClient, name: StreamName) -> Result<Option<(Str
     }
 }
 
-async fn write_owner(kv: &CrowdbKvClient, owner: &StreamWriterOwner, revision: u64) -> Result<()> {
+async fn write_owner(kv: &PaxosKvClient, owner: &StreamWriterOwner, revision: u64) -> Result<()> {
     let key = StreamWriterOwnerKey {
         stream_name: owner.stream_name,
     }

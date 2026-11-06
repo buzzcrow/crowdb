@@ -13,11 +13,15 @@ use tokio::sync::{Mutex, Notify, RwLock};
 
 use crate::{MutationOperation, PartitionTree, Result, ScanEntry, ValueRevision};
 
+mod prepared_split;
+use prepared_split::MemoryValues;
+
 #[derive(Debug)]
 pub struct MemoryPartitionTree {
     tree_id: u64,
-    values: RwLock<BTreeMap<Vec<u8>, ValueRevision>>,
-    last_applied: AtomicU64,
+    range: crate::PartitionRange,
+    values: Arc<RwLock<MemoryValues>>,
+    last_applied: Arc<AtomicU64>,
     checkpoint_applied: AtomicU64,
     fail_next_apply: AtomicBool,
     rebuild_paused: Arc<AtomicBool>,
@@ -28,14 +32,18 @@ pub struct MemoryPartitionTree {
     split_publish_resume: Arc<Notify>,
     split_views: Mutex<BTreeMap<u64, BTreeMap<Vec<u8>, ValueRevision>>>,
     next_split_view: AtomicU64,
+    collection_backlog: AtomicU64,
+    collection_calls: AtomicU64,
+    fail_collection: AtomicBool,
 }
 
 impl Default for MemoryPartitionTree {
     fn default() -> Self {
         Self {
             tree_id: 1,
-            values: RwLock::default(),
-            last_applied: AtomicU64::new(0),
+            range: crate::PartitionRange::default(),
+            values: Arc::new(RwLock::new(MemoryValues::new(BTreeMap::new()))),
+            last_applied: Arc::new(AtomicU64::new(0)),
             checkpoint_applied: AtomicU64::new(u64::MAX),
             fail_next_apply: AtomicBool::new(false),
             rebuild_paused: Arc::new(AtomicBool::new(false)),
@@ -46,11 +54,28 @@ impl Default for MemoryPartitionTree {
             split_publish_resume: Arc::new(Notify::new()),
             split_views: Mutex::default(),
             next_split_view: AtomicU64::new(0),
+            collection_backlog: AtomicU64::new(0),
+            collection_calls: AtomicU64::new(0),
+            fail_collection: AtomicBool::new(false),
         }
     }
 }
 
 impl MemoryPartitionTree {
+    pub async fn prepared_overlay_footprint_for_tests(&self) -> (usize, u64, bool) {
+        self.values.read().await.prepared_footprint()
+    }
+
+    pub fn configure_collection_for_tests(&self, backlog: u64, fail: bool) {
+        self.collection_backlog.store(backlog, Ordering::Release);
+        self.fail_collection.store(fail, Ordering::Release);
+    }
+
+    #[must_use]
+    pub fn collection_calls_for_tests(&self) -> u64 {
+        self.collection_calls.load(Ordering::Acquire)
+    }
+
     #[must_use]
     pub fn with_tree_id(tree_id: u64) -> Self {
         Self {
@@ -98,6 +123,22 @@ impl MemoryPartitionTree {
 
 #[async_trait]
 impl PartitionTree for MemoryPartitionTree {
+    async fn collect_storage(&self) -> Result<bool> {
+        self.collection_calls.fetch_add(1, Ordering::AcqRel);
+        if self.fail_collection.load(Ordering::Acquire) {
+            return Err(crate::ChunkKvError::MaintenanceDegraded(
+                "injected collection failure".into(),
+            ));
+        }
+        let previous = self
+            .collection_backlog
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                Some(value.saturating_sub(1))
+            })
+            .expect("collection update always succeeds");
+        Ok(previous > 1)
+    }
+
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
@@ -232,20 +273,13 @@ impl PartitionTree for MemoryPartitionTree {
             return Err(crate::ChunkKvError::ApplyStateUnknown);
         }
         let mut values = self.values.write().await;
-        match operation.successful_value() {
-            Some(value) => {
-                values.insert(
-                    operation.key().to_vec(),
-                    ValueRevision {
-                        revision: mutation_seq,
-                        value: value.to_vec(),
-                    },
-                );
-            }
-            None => {
-                values.remove(operation.key());
-            }
-        }
+        values.apply(
+            operation.key(),
+            operation.successful_value().map(|value| ValueRevision {
+                revision: mutation_seq,
+                value: value.to_vec(),
+            }),
+        );
         self.last_applied.store(mutation_seq, Ordering::Release);
         Ok(())
     }
@@ -270,8 +304,9 @@ impl PartitionTree for MemoryPartitionTree {
         let applied = self.last_applied.load(Ordering::Acquire);
         let snapshot = Self {
             tree_id: self.tree_id,
-            values: RwLock::new(values),
-            last_applied: AtomicU64::new(applied),
+            range: self.range.clone(),
+            values: Arc::new(RwLock::new(MemoryValues::new(values))),
+            last_applied: Arc::new(AtomicU64::new(applied)),
             checkpoint_applied: AtomicU64::new(applied),
             fail_next_apply: AtomicBool::new(false),
             rebuild_paused: Arc::clone(&self.rebuild_paused),
@@ -282,6 +317,9 @@ impl PartitionTree for MemoryPartitionTree {
             split_publish_resume: Arc::clone(&self.split_publish_resume),
             split_views: Mutex::default(),
             next_split_view: AtomicU64::new(0),
+            collection_backlog: AtomicU64::new(0),
+            collection_calls: AtomicU64::new(0),
+            fail_collection: AtomicBool::new(false),
         };
         Ok((applied, applied, Arc::new(snapshot)))
     }
@@ -312,8 +350,9 @@ impl PartitionTree for MemoryPartitionTree {
         };
         let rebuilt = Self {
             tree_id,
-            values: RwLock::new(filtered),
-            last_applied: AtomicU64::new(self.last_applied.load(Ordering::Acquire)),
+            range: range.clone(),
+            values: Arc::new(RwLock::new(MemoryValues::new(filtered))),
+            last_applied: Arc::new(AtomicU64::new(self.last_applied.load(Ordering::Acquire))),
             checkpoint_applied: AtomicU64::new(u64::MAX),
             fail_next_apply: AtomicBool::new(false),
             rebuild_paused: Arc::clone(&self.rebuild_paused),
@@ -324,6 +363,9 @@ impl PartitionTree for MemoryPartitionTree {
             split_publish_resume: Arc::clone(&self.split_publish_resume),
             split_views: Mutex::default(),
             next_split_view: AtomicU64::new(0),
+            collection_backlog: AtomicU64::new(0),
+            collection_calls: AtomicU64::new(0),
+            fail_collection: AtomicBool::new(false),
         };
         Ok((Arc::new(rebuilt), stats))
     }
@@ -350,6 +392,14 @@ impl PartitionTree for MemoryPartitionTree {
         Ok((generation, self.last_applied.load(Ordering::Acquire)))
     }
 
+    async fn arm_split_overlay(
+        &self,
+        destination: &dyn PartitionTree,
+        limits: crate::SplitOverlayLimits,
+    ) -> Result<(Arc<dyn crate::PreparedSplitOverlay>, u64)> {
+        prepared_split::arm(self, destination, limits).await
+    }
+
     async fn install_split_memtable_overlay(
         &self,
         source: &dyn PartitionTree,
@@ -360,8 +410,11 @@ impl PartitionTree for MemoryPartitionTree {
         })?;
         let inherited = source.values.read().await.clone();
         let mut values = self.values.write().await;
+        // The inherited view replaces the older base in this child's range,
+        // including deletions. Independently newer child revisions still win.
+        values.retain(|key, value| !self.range.contains(key) || value.revision > journal_frontier);
         for (key, value) in inherited {
-            if value.revision <= journal_frontier {
+            if self.range.contains(&key) && value.revision <= journal_frontier {
                 values.entry(key).or_insert(value);
             }
         }
@@ -389,14 +442,13 @@ impl PartitionTree for MemoryPartitionTree {
         let destination = destination.as_any().downcast_ref::<Self>().ok_or_else(|| {
             crate::ChunkKvError::InvalidRequest("memory split view requires a memory destination".into())
         })?;
-        let view = self
-            .split_views
-            .lock()
-            .await
-            .get(&generation)
-            .cloned()
-            .ok_or_else(|| crate::ChunkKvError::SplitRetry("split memtable view is stale".into()))?;
+        let view = if let Some(view) = self.split_views.lock().await.get(&generation).cloned() {
+            view
+        } else {
+            self.values.read().await.prepared_view(generation)?
+        };
         let mut values = destination.values.write().await;
+        values.retain(|key, value| !range.contains(key) || value.revision > journal_frontier);
         for (key, value) in view
             .into_iter()
             .filter(|(key, value)| range.contains(key) && value.revision <= journal_frontier)
@@ -419,7 +471,9 @@ impl PartitionTree for MemoryPartitionTree {
     }
 
     async fn release_split_memtable_view(&self, generation: u64) -> Result<()> {
-        if self.split_views.lock().await.remove(&generation).is_none() {
+        if self.split_views.lock().await.remove(&generation).is_none()
+            && !self.values.write().await.release_prepared(generation)
+        {
             return Err(crate::ChunkKvError::SplitRetry(
                 "split memtable view is stale".into(),
             ));

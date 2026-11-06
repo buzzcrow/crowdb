@@ -8,6 +8,16 @@ use std::sync::Arc;
 use crate::error::{check, CtError};
 use crate::{sys, PageStore};
 
+pub mod legacy;
+pub mod pin_service;
+mod runtime;
+pub use runtime::ChunkRuntimeOptions;
+pub mod protection;
+mod protection_callbacks;
+pub mod stage;
+mod stage_callbacks;
+use stage::{StageId, StageRecord};
+
 #[derive(Debug, Clone, Copy)]
 pub struct ChunkPageStoreOptions {
     pub tree_id: u64,
@@ -73,6 +83,46 @@ pub enum RootCatalogObject {
 /// maintenance paths. Implementations may bridge to an asynchronous service
 /// on a dedicated worker; tree point reads never call this interface.
 pub trait RootCatalogStore: Send + Sync + 'static {
+    /// Immutable original manifest retained before replacing a legacy root.
+    fn prepare_legacy_migration(
+        &self,
+        _tree_id: u64,
+        _generation: u64,
+        _manifest: &[u8],
+    ) -> Result<(), CtError> {
+        Err(CtError::NotSupported)
+    }
+    fn load_legacy_migration(&self, _tree_id: u64, _generation: u64) -> Result<Option<Vec<u8>>, CtError> {
+        Err(CtError::NotSupported)
+    }
+    /// Durable reference intents share the same authority as pack deletion.
+    fn stage_protection(&self) -> Option<&dyn protection::StageProtectionCatalog> {
+        None
+    }
+    /// Schema support alone does not enable independent staged writeback.
+    fn supports_staging(&self) -> bool {
+        false
+    }
+    fn load_stage(&self, _tree_id: u64, _id: StageId) -> Result<Option<StageRecord>, CtError> {
+        Err(CtError::NotSupported)
+    }
+    fn compare_stage(
+        &self,
+        _tree_id: u64,
+        _owner_epoch: u64,
+        _expected: Option<&StageRecord>,
+        _next: Option<&StageRecord>,
+    ) -> Result<(), CtError> {
+        Err(CtError::NotSupported)
+    }
+    fn list_stages(
+        &self,
+        _tree_id: u64,
+        _after: Option<StageId>,
+        _limit: u32,
+    ) -> Result<Vec<StageRecord>, CtError> {
+        Err(CtError::NotSupported)
+    }
     fn load(&self, tree_id: u64, object: RootCatalogObject) -> Result<Option<Vec<u8>>, CtError>;
     fn store(&self, tree_id: u64, object: RootCatalogObject, data: &[u8]) -> Result<(), CtError>;
     fn publish(
@@ -110,6 +160,11 @@ pub trait RootCatalogStore: Send + Sync + 'static {
 }
 
 impl ChunkRootCatalog {
+    /// Persistent intent/pin schema; the complete backend must also support fenced IO and drain.
+    #[must_use]
+    pub fn supports_protection_schema(&self) -> bool {
+        unsafe { sys::ct_root_catalog_protection_capabilities(self.ptr.as_ptr()) & 1 != 0 }
+    }
     pub fn open_memory(owner_epoch: u64) -> Result<Self, CtError> {
         let mut out = std::ptr::null_mut();
         check(unsafe { sys::ct_memory_root_catalog_open(owner_epoch, &mut out) })?;
@@ -124,6 +179,8 @@ impl ChunkRootCatalog {
     ///
     /// Returns an invalid callback configuration error.
     pub fn open_callback(store: Arc<dyn RootCatalogStore>) -> Result<Self, CtError> {
+        let supports_staging = store.supports_staging();
+        let supports_protection = store.stage_protection().is_some();
         let context = Box::into_raw(Box::new(store)).cast::<c_void>();
         let callbacks = sys::ct_root_catalog_callbacks {
             load: Some(catalog_load),
@@ -138,9 +195,27 @@ impl ChunkRootCatalog {
             drop_context: Some(catalog_drop_context),
         };
         let mut out = std::ptr::null_mut();
-        if let Err(error) =
-            check(unsafe { sys::ct_callback_root_catalog_open(&callbacks, context, &mut out) })
-        {
+        let status = unsafe {
+            if supports_staging && supports_protection {
+                sys::ct_callback_root_catalog_open_v3(
+                    &callbacks,
+                    &stage_callbacks::callbacks(),
+                    &protection_callbacks::callbacks(),
+                    context,
+                    &mut out,
+                )
+            } else if supports_staging {
+                sys::ct_callback_root_catalog_open_v2(
+                    &callbacks,
+                    &stage_callbacks::callbacks(),
+                    context,
+                    &mut out,
+                )
+            } else {
+                sys::ct_callback_root_catalog_open(&callbacks, context, &mut out)
+            }
+        };
+        if let Err(error) = check(status) {
             unsafe { drop(Box::from_raw(context.cast::<Arc<dyn RootCatalogStore>>())) };
             return Err(error);
         }
@@ -221,11 +296,13 @@ unsafe extern "C" fn catalog_load(
         if context.is_null() || out.is_null() || len.is_null() {
             return -2;
         }
-        let object = match catalog_object(kind, object_id) {
-            Ok(object) => object,
-            Err(error) => return error_code(error),
+        let result = if kind == 4 {
+            catalog_store_ref(context).load_legacy_migration(tree_id, object_id)
+        } else {
+            catalog_object(kind, object_id)
+                .and_then(|object| catalog_store_ref(context).load(tree_id, object))
         };
-        match catalog_store_ref(context).load(tree_id, object) {
+        match result {
             Ok(Some(bytes)) if !bytes.is_empty() => {
                 let bytes = bytes.into_boxed_slice();
                 *len = bytes.len();
@@ -260,18 +337,18 @@ unsafe extern "C" fn catalog_store(
         if context.is_null() || (data.is_null() && len != 0) {
             return -2;
         }
-        let object = match catalog_object(kind, object_id) {
-            Ok(object) => object,
-            Err(error) => return error_code(error),
-        };
         let bytes = if len == 0 {
             &[]
         } else {
             std::slice::from_raw_parts(data, len)
         };
-        catalog_store_ref(context)
-            .store(tree_id, object, bytes)
-            .map_or_else(error_code, |()| 0)
+        let result = if kind == 4 {
+            catalog_store_ref(context).prepare_legacy_migration(tree_id, object_id, bytes)
+        } else {
+            catalog_object(kind, object_id)
+                .and_then(|object| catalog_store_ref(context).store(tree_id, object, bytes))
+        };
+        result.map_or_else(error_code, |()| 0)
     }))
     .unwrap_or(-6)
 }
@@ -420,6 +497,9 @@ pub use transport::{ChunkRpcDiskRoute, ChunkRpcRoute, ChunkRpcTransportOptions, 
 pub use transport::{ChunkRpcRouteResolver, OwnedChunkRpcDiskRoute, OwnedChunkRpcTransportOptions};
 
 impl PageStore {
+    /// Opens the legacy mutable-address storage adapter for explicit migration.
+    /// Ordinary Tree open rejects this adapter. New writers use
+    /// `PageStore::open_chunk_runtime`; old roots use `Crowdbtree::migrate_legacy_chunk`.
     pub fn open_chunk(
         options: ChunkPageStoreOptions,
         catalog: Arc<ChunkRootCatalog>,
@@ -455,13 +535,16 @@ impl PageStore {
         })
     }
 
-    /// Estimates retained pack bytes from cached layout metadata without I/O.
+    /// Legacy mutable-address layout estimate. Runtime-backed stores return
+    /// `NotSupported`; use `Crowdbtree::backing_stats` for actual physical bytes.
     pub fn chunk_estimated_bytes(&self) -> Result<u64, CtError> {
         let mut bytes = 0;
         check(unsafe { sys::ct_chunk_page_store_estimated_bytes(self.ptr.as_ptr(), &mut bytes) })?;
         Ok(bytes)
     }
 
+    /// Legacy mutable-address counters. Runtime-backed stores return
+    /// `NotSupported`; use Tree work and backing snapshots for current metrics.
     pub fn chunk_stats(&self) -> Result<ChunkPageStoreStats, CtError> {
         let mut raw = sys::ct_chunk_page_store_stats::default();
         check(unsafe { sys::ct_chunk_page_store_get_stats(self.ptr.as_ptr(), &mut raw) })?;
@@ -569,3 +652,6 @@ impl PageStore {
         })
     }
 }
+
+#[cfg(feature = "test-util")]
+pub mod test_util;

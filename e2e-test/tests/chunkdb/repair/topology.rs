@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use bytes::Bytes;
-use crowdb_kv_client::HardwareClient;
+use crowdb_paxos_kv_client::HardwareClient;
 use crowdb_protocol::chunkdb::rpc::{AllocateChunkRequest, ChunkType, QueryChunkRequest, Strip, StripType};
 use crowdb_protocol::common::HwStatus;
 use std::time::{Duration, Instant};

@@ -44,10 +44,10 @@ class WalWebCluster(Cluster):
                      "--mount", f"type=bind,source={data},target=/opt/crowdb/data", self.image,
                      "-R", "crowdb:crowdb", "/opt/crowdb/data/persistent/console/default")
         self.addresses.append(start_node(self, index, data,
-            ("server", "web", "--skip-startup-restore", "--bind", "0.0.0.0", "--port", "9090",
+            ("server", "web", "--skip-startup-restore", "--bind", "0.0.0.0", "--port", "6135",
              "--ui-root", "/opt/crowdb/ui", "--log-dir", "/opt/crowdb/data/log/web"),
             environment=("CROWDB_RUNTIME_ROOT=/opt/crowdb/data",)))
-        wait(lambda: HTTP.open(f"http://{self.addresses[-1]}:9090/healthz", timeout=5).read(),
+        wait(lambda: HTTP.open(f"http://{self.addresses[-1]}:6135/healthz", timeout=5).read(),
              lambda body: body == b"ok", "WAL recovery release Web listener", seconds=20)
         return self
 

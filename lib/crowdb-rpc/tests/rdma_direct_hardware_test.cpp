@@ -27,8 +27,9 @@ RdmaConfig direct_config()
     config.send_arena_bytes                                          = 4U * RDMA_DATAPATH_CAPACITY;
     config.receive_arena_bytes                                       = uint64_t{4} * config.wire_slot_capacity;
     config.source_address                                            = std::getenv("CROWDB_RDMA_E2E_LISTEN_ADDR");
-    if (const auto *device = std::getenv("CROWDB_RDMA_DEVICE"))
+    if (const auto *device = std::getenv("CROWDB_RDMA_DEVICE")) {
         config.device = device;
+    }
     return config;
 }
 
@@ -46,8 +47,9 @@ template <typename Ready> bool drain_until(RdmaTransport &client, RdmaTransport 
 TEST(RdmaHardwareTest, DirectDataPreservesBytesAlignmentAndLeaseAdmission)
 {
     const auto *address = std::getenv("CROWDB_RDMA_E2E_LISTEN_ADDR");
-    if (std::getenv("CROWDB_RDMA_E2E") == nullptr || address == nullptr)
+    if (std::getenv("CROWDB_RDMA_E2E") == nullptr || address == nullptr) {
         GTEST_SKIP() << "set CROWDB_RDMA_E2E and local HCA address";
+    }
     auto config            = direct_config();
     config.send_batch_size = 4;
     SystemBufferPool application;
@@ -66,7 +68,8 @@ TEST(RdmaHardwareTest, DirectDataPreservesBytesAlignmentAndLeaseAdmission)
     acceptor.join();
     ASSERT_NE(incoming, nullptr);
     ASSERT_NE(outgoing, nullptr);
-    std::vector<Buffer *>         server_held, client_held;
+    std::vector<Buffer *>         server_held;
+    std::vector<Buffer *>         client_held;
     const std::array<uint32_t, 4> lengths{0, 13, RDMA_DATAPATH_CAPACITY, 65536};
     incoming->set_on_frame([&](Frame *frame, Connection *connection) {
         EXPECT_GE(frame->request_id, 1U);
@@ -83,8 +86,9 @@ TEST(RdmaHardwareTest, DirectDataPreservesBytesAlignmentAndLeaseAdmission)
         delete frame;
         const bool accepted = server->submit(connection, reply);
         EXPECT_TRUE(accepted);
-        if (!accepted)
+        if (!accepted) {
             release_rdma_frames(reply);
+        }
     });
     outgoing->set_on_frame([&](Frame *frame, Connection *) {
         const auto expected = lengths[frame->request_id - 1];
@@ -103,8 +107,9 @@ TEST(RdmaHardwareTest, DirectDataPreservesBytesAlignmentAndLeaseAdmission)
             ASSERT_NE(data, nullptr);
             std::memset(data->data, static_cast<int>(index + 1), lengths[index]);
             data->len = lengths[index];
-            if (index == 2)
+            if (index == 2) {
                 source_held = data->ref_clone();
+            }
             total += lengths[index];
         }
         auto *frame = build_out_frame(index + 1, 100, build_ping_request(&application, index + 1, 0), data);
@@ -137,10 +142,12 @@ TEST(RdmaHardwareTest, DirectDataPreservesBytesAlignmentAndLeaseAdmission)
     EXPECT_FALSE(client_device.expired());
     EXPECT_FALSE(server_device.expired());
     EXPECT_EQ(source_held->payload_data()[RDMA_DATAPATH_CAPACITY - 1], 3U);
-    for (auto *buffer : server_held)
+    for (auto *buffer : server_held) {
         buffer->release();
-    for (auto *buffer : client_held)
+    }
+    for (auto *buffer : client_held) {
         buffer->release();
+    }
     source_held->release();
     EXPECT_TRUE(client_device.expired());
     EXPECT_TRUE(server_device.expired());
@@ -149,8 +156,9 @@ TEST(RdmaHardwareTest, DirectDataPreservesBytesAlignmentAndLeaseAdmission)
 TEST(RdmaHardwareTest, LayoutMismatchFailsBeforeCmOrUsesExplicitTcpFallback)
 {
     const auto *address = std::getenv("CROWDB_RDMA_E2E_LISTEN_ADDR");
-    if (std::getenv("CROWDB_RDMA_E2E") == nullptr || address == nullptr)
+    if (std::getenv("CROWDB_RDMA_E2E") == nullptr || address == nullptr) {
         GTEST_SKIP() << "set CROWDB_RDMA_E2E and local HCA address";
+    }
     auto config                   = direct_config();
     auto contiguous               = config;
     contiguous.wire_layout        = RdmaWireLayout::Contiguous;
@@ -181,15 +189,19 @@ TEST(RdmaHardwareTest, LayoutMismatchFailsBeforeCmOrUsesExplicitTcpFallback)
 static void test_mixed_staging(bool packed, uint32_t receive_batch = 1)
 {
     const auto *address = std::getenv("CROWDB_RDMA_E2E_LISTEN_ADDR");
-    if (std::getenv("CROWDB_RDMA_E2E") == nullptr || address == nullptr)
+    if (std::getenv("CROWDB_RDMA_E2E") == nullptr || address == nullptr) {
         GTEST_SKIP() << "set CROWDB_RDMA_E2E and local HCA address";
+    }
     auto config                = direct_config();
     config.send_batch_size     = 4;
     config.aggregation_enabled = packed;
     config.receive_batch_size  = receive_batch;
     SystemBufferPool application;
-    RdmaTransport    server(config, &application), client(config, &application);
-    ASSERT_TRUE(server.listen(address, 19392));
+    RdmaTransport    server(config, &application);
+    RdmaTransport    client(config, &application);
+    ASSERT_TRUE(server.listen(address, 0));
+    const auto port = server.local_capability().port;
+    ASSERT_GT(port, 0);
     std::shared_ptr<Connection> incoming;
     std::thread                 acceptor([&] {
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
@@ -198,7 +210,7 @@ static void test_mixed_staging(bool packed, uint32_t receive_batch = 1)
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     });
-    auto                        outgoing = client.connect(address, 19392);
+    auto                        outgoing = client.connect(address, port);
     acceptor.join();
     ASSERT_NE(outgoing, nullptr);
     ASSERT_NE(incoming, nullptr);
@@ -210,8 +222,9 @@ static void test_mixed_staging(bool packed, uint32_t receive_batch = 1)
         delete frame;
         const bool accepted = server.submit(connection, reply);
         EXPECT_TRUE(accepted);
-        if (!accepted)
+        if (!accepted) {
             release_rdma_frames(reply);
+        }
     });
     std::vector<Buffer *> held;
     outgoing->set_on_frame([&](Frame *frame, Connection *) {
@@ -232,18 +245,21 @@ static void test_mixed_staging(bool packed, uint32_t receive_batch = 1)
     auto submit = [&](uint64_t id, uint32_t size) {
         auto *data = application.alloc(size);
         EXPECT_NE(data, nullptr);
-        if (data == nullptr)
+        if (data == nullptr) {
             return false;
+        }
         std::memset(data->data, static_cast<int>(id), size);
         data->len   = size;
         auto *frame = build_out_frame(id, 100, build_ping_request(&application, id, 0), data);
-        if (client.submit(outgoing.get(), frame))
+        if (client.submit(outgoing.get(), frame)) {
             return true;
+        }
         release_rdma_frames(frame);
         return false;
     };
-    for (uint64_t id = 1; id <= 4; ++id)
+    for (uint64_t id = 1; id <= 4; ++id) {
         ASSERT_TRUE(submit(id, 128));
+    }
     if (!packed) {
         ASSERT_EQ(TestRdmaTransport::flush_for_tests(client, outgoing.get(), 4), 4U);
         // Compatibility staging cannot consume the registered producer's
@@ -259,9 +275,9 @@ static void test_mixed_staging(bool packed, uint32_t receive_batch = 1)
     ASSERT_TRUE(submit(5, 65536));
     ASSERT_TRUE(drain_until(client, server, [&] { return replies == 5; }));
     EXPECT_EQ(client.stats().send_post_calls.load(), 2U);
-    EXPECT_EQ(client.stats().copied_payload_bytes.load(), 4U * 128 + 65536);
+    EXPECT_EQ(client.stats().copied_payload_bytes.load(), (4U * 128) + 65536);
     EXPECT_EQ(client.stats().copied_aggregate_payload_bytes.load(), packed ? 4U * 128 : 0U);
-    EXPECT_EQ(client.stats().copied_staging_payload_bytes.load(), packed ? 65536U : 4U * 128 + 65536);
+    EXPECT_EQ(client.stats().copied_staging_payload_bytes.load(), packed ? 65536U : (4U * 128) + 65536);
     if (packed) {
         const auto posted = client.stats().posted_receives.load();
         ASSERT_EQ(held.size(), 4U);

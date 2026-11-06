@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{ChunkSlot, ChunkSlotBitmap, ChunkSlotError, CHUNK_SLOT_COUNT, CHUNK_SLOT_LAYOUT_VERSION};
 
-/// Publish a head and all its owner records in one group-0 conditional batch.
+/// A committed head makes the complete owner layout visible to readers.
 /// Service and storage heads have independent generations and namespaces.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

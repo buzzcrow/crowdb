@@ -1,12 +1,14 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use bytes::Bytes;
-use std::os::raw::c_int;
-
-use crate::error::{check, take_buf, CtError};
+use crate::error::CtError;
 use crate::sys;
 use crate::tree::Crowdbtree;
+use bytes::Bytes;
+
+mod options;
+pub(crate) mod owner;
+pub use options::ScanOptions;
 
 /// A scan result entry. `key` and `value` are zero-copy `Bytes` slices
 /// into the packed result buffer, not per-entry `Vec<u8>` copies.
@@ -35,14 +37,8 @@ pub struct ViewEntry {
     pub value: Vec<u8>,
 }
 
-/// Unpack the C++ packed scan result buffer into `ScanEntry`s.
-/// `bytes` is converted to a single `Bytes` once (zero-copy move of the
-/// `Vec<u8>` allocation via `Bytes::from`), then each entry's `key` and
-/// `value` is a `packed.slice(range)` — zero-copy, sharing the same
-/// allocation. All slices keep it alive until the last one is dropped.
-/// Replaces the prior per-entry `.to_vec()` copies (2N copies to 0).
-pub(crate) fn decode_scan(bytes: Vec<u8>, count: usize) -> Result<Vec<ScanEntry>, CtError> {
-    let packed = Bytes::from(bytes);
+/// Decode entries as slices retaining the native packed allocation owner.
+pub(crate) fn decode_scan_bytes(packed: Bytes, count: usize) -> Result<Vec<ScanEntry>, CtError> {
     let bytes: &[u8] = packed.as_ref();
     let mut out = Vec::with_capacity(count);
     let mut pos = 0usize;
@@ -92,41 +88,11 @@ impl Crowdbtree {
         start_inclusive: bool,
         begin_key: &[u8],
     ) -> Result<Option<ScanEntry>, CtError> {
-        let mut found: c_int = 0;
-        let mut key = sys::ct_buf {
-            data: std::ptr::null_mut(),
-            len: 0,
-        };
-        let mut value = sys::ct_buf {
-            data: std::ptr::null_mut(),
-            len: 0,
-        };
-        let mut slot = 0_u64;
-        check(unsafe {
-            sys::ct_seek_reverse(
-                self.as_ptr(),
-                start_key.as_ptr(),
-                start_key.len(),
-                if start_inclusive { 1 } else { 0 },
-                begin_key.as_ptr(),
-                begin_key.len(),
-                &mut found,
-                &mut key,
-                &mut slot,
-                &mut value,
-            )
-        })?;
-        let key = take_buf(key);
-        let value = take_buf(value);
-        Ok((found != 0).then(|| ScanEntry {
-            key: Bytes::from(key),
-            slot,
-            value: Bytes::from(value),
-            tombstone: false,
-        }))
+        let (entries, _) = self.scan_reverse(Some(start_key), start_inclusive, begin_key, 1, 0)?;
+        Ok(entries.into_iter().next())
     }
 
-    /// Returns a bounded page in descending key order.
+    /// Scans in descending key order under the supplied count and byte limits.
     pub fn scan_reverse(
         &self,
         start_key: Option<&[u8]>,
@@ -135,29 +101,30 @@ impl Crowdbtree {
         limit: usize,
         byte_budget: usize,
     ) -> Result<(Vec<ScanEntry>, bool), CtError> {
-        let mut entries = sys::ct_buf {
-            data: std::ptr::null_mut(),
-            len: 0,
-        };
-        let mut count = 0_u64;
-        let mut truncated: c_int = 0;
-        check(unsafe {
-            sys::ct_scan_reverse(
-                self.as_ptr(),
-                start_key.unwrap_or_default().as_ptr(),
-                start_key.map_or(0, <[u8]>::len),
-                if start_key.is_some() { 1 } else { 0 },
-                if start_inclusive { 1 } else { 0 },
-                begin_key.as_ptr(),
-                begin_key.len(),
+        let start = start_key.unwrap_or_default();
+        owner::scan(
+            self.as_ptr(),
+            &sys::ct_scan_options_v2 {
+                struct_size: std::mem::size_of::<sys::ct_scan_options_v2>(),
+                prefix: std::ptr::null(),
+                prefix_len: 0,
+                start: start.as_ptr(),
+                start_len: start.len(),
+                end: std::ptr::null(),
+                end_len: 0,
+                begin: begin_key.as_ptr(),
+                begin_len: begin_key.len(),
                 limit,
                 byte_budget,
-                &mut entries,
-                &mut count,
-                &mut truncated,
-            )
-        })?;
-        Ok((decode_scan(take_buf(entries), count as usize)?, truncated != 0))
+                deadline_ms: 0,
+                reverse: 1,
+                keys_only: 0,
+                include_tombstones: 0,
+                has_start_bound: i32::from(start_key.is_some()),
+                start_inclusive: i32::from(start_inclusive),
+                strict_byte_budget: 0,
+            },
+        )
     }
 
     /// Range scan over `prefix` (empty = whole keyspace).
@@ -168,6 +135,9 @@ impl Crowdbtree {
     /// strictly less than `end_key` are returned. When `keys_only` is true,
     /// values are not materialized (no overflow-chain assembly): entries
     /// carry empty values and the byte budget accounts for key bytes only.
+    /// A zero `limit` removes the total count limit across internal work windows.
+    /// Results still obey the byte/deadline limits and allocation budgets. Resume
+    /// truncated output from the last returned key; use `scan_from` for an empty key.
     #[allow(clippy::too_many_arguments)]
     pub fn scan(
         &self,
@@ -273,41 +243,28 @@ impl Crowdbtree {
         include_tombstones: bool,
         strict_byte_budget: bool,
     ) -> Result<(Vec<ScanEntry>, bool), CtError> {
-        let mut buf = sys::ct_buf {
-            data: std::ptr::null_mut(),
-            len: 0,
-        };
-        let mut count = 0u64;
-        let mut truncated: c_int = 0;
-        let scan = if strict_byte_budget {
-            sys::ct_scan_strict
-        } else {
-            sys::ct_scan
-        };
-        let status = unsafe {
-            scan(
-                self.as_ptr(),
-                prefix.as_ptr(),
-                prefix.len(),
-                start_key.as_ptr(),
-                start_key.len(),
-                if has_start_bound { 1 } else { 0 },
-                if start_inclusive { 1 } else { 0 },
-                end_key.as_ptr(),
-                end_key.len(),
+        owner::scan(
+            self.as_ptr(),
+            &sys::ct_scan_options_v2 {
+                struct_size: std::mem::size_of::<sys::ct_scan_options_v2>(),
+                prefix: prefix.as_ptr(),
+                prefix_len: prefix.len(),
+                start: start_key.as_ptr(),
+                start_len: start_key.len(),
+                end: end_key.as_ptr(),
+                end_len: end_key.len(),
+                begin: std::ptr::null(),
+                begin_len: 0,
                 limit,
                 byte_budget,
-                if keys_only { 1 } else { 0 },
                 deadline_ms,
-                if include_tombstones { 1 } else { 0 },
-                &mut buf,
-                &mut count,
-                &mut truncated,
-            )
-        };
-        check(status)?;
-        let bytes = take_buf(buf);
-        let entries = decode_scan(bytes, count as usize)?;
-        Ok((entries, truncated != 0))
+                reverse: 0,
+                keys_only: i32::from(keys_only),
+                include_tombstones: i32::from(include_tombstones),
+                has_start_bound: i32::from(has_start_bound),
+                start_inclusive: i32::from(start_inclusive),
+                strict_byte_budget: i32::from(strict_byte_budget),
+            },
+        )
     }
 }

@@ -46,7 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .join("cpp");
     let common_src = common.join("src");
     let common_include = common.join("include");
-    let stdexec_include = engine
+    let stdexec_source = engine
         .parent()
         .and_then(|p| p.parent())
         .ok_or("crowdb-tree must be under the repository lib directory")?
@@ -57,6 +57,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .parent()
         .and_then(|path| path.parent())
         .ok_or("crowdb-tree must be under the repository lib directory")?;
+    let stdexec_overlay = PathBuf::from(std::env::var("OUT_DIR")?).join("stdexec-pool");
+    let prepare_stdexec = engine.join("cmake").join("prepare_stdexec.py");
+    if !Command::new("python3")
+        .arg(&prepare_stdexec)
+        .arg(&stdexec_source)
+        .arg(&stdexec_overlay)
+        .status()?
+        .success()
+    {
+        return Err("stdexec allocator overlay preparation failed".into());
+    }
+    let stdexec_include = stdexec_overlay.join("include");
+    for name in [
+        "prepare_stdexec.py",
+        "stdexec-pool.patch",
+        "stdexec-pool-base.json",
+    ] {
+        println!(
+            "cargo:rerun-if-changed={}",
+            engine.join("cmake").join(name).display()
+        );
+    }
     let rpc = repository.join("lib").join("crowdb-rpc");
     let protocol_cpp_include = repository
         .join("lib")
@@ -185,6 +207,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    // Cross-language runtime fixtures are excluded from every ordinary build.
+    if std::env::var_os("CARGO_FEATURE_TEST_UTIL").is_some() {
+        let tests = engine.join("tests");
+        files.push(tests.join("common/test_chunk_runtime_c_api.cpp"));
+        build.include(&tests);
+        println!("cargo:rerun-if-changed={}", tests.join("common").display());
+    }
+
     for f in &files {
         build.file(f);
         println!("cargo:rerun-if-changed={}", f.display());
@@ -279,7 +309,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("cargo:rustc-link-arg=-Wl,-rpath,{dir}");
     }
     println!("cargo:rerun-if-changed={}", include.display());
-    println!("cargo:rerun-if-changed={}", stdexec_include.display());
+    println!("cargo:rerun-if-changed={}", stdexec_source.display());
     println!("cargo:rerun-if-env-changed=CROWDB_TREE_LZ4_LIB");
     println!("cargo:rerun-if-env-changed=CONDA_PREFIX");
     Ok(())

@@ -60,9 +60,7 @@ extern "C" crowdb_rpc_buffer_t crowdb_rpc_buffer_allocation_ref(crowdb_rpc_buffe
         if (buffer == nullptr || buffer->len == 0) {
             return nullptr;
         }
-        auto result = std::make_unique<crowdb_rpc_buffer_s>();
-        result->buf = buffer->slice(0, buffer->len);
-        return result->buf == nullptr ? nullptr : result.release();
+        return crowdb::rpc::wrap_owned_buffer(buffer->slice(0, buffer->len));
     }
     catch (...) {
         return nullptr;

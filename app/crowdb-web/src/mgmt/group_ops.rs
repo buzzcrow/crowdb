@@ -180,7 +180,7 @@ fn project_group(
     gid: u64,
     members: Vec<ReplicaValue>,
     reports: Vec<Option<NodeGroup>>,
-    membership: Option<&crowdb_kv_client::GroupMembershipSnapshot>,
+    membership: Option<&crowdb_paxos_kv_client::GroupMembershipSnapshot>,
 ) -> GroupView {
     let mut replicas = Vec::with_capacity(members.len());
     let mut observed = 0usize;

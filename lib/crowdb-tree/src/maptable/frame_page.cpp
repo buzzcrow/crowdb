@@ -86,18 +86,20 @@ void frame_set_inner_fence_pages(uint8_t *f, uint32_t page_bytes, uint64_t lower
 PageSummary frame_summary(const uint8_t *f)
 {
     PageSummary out;
-    if (f == nullptr || f[fh::kFormatVersion] != kFrameVersion || f[fh::kSummaryFlags] == 0) {
+    if (f == nullptr || f[fh::kFormatVersion] != kFrameVersion || f[fh::kSummaryFlags] != 1) {
         return out;
     }
-    out.live_kv = frame_u64(f, fh::kSummaryLiveKv);
-    out.live_key_bytes = frame_u64(f, fh::kSummaryLiveKeyBytes);
-    out.live_value_bytes = frame_u64(f, fh::kSummaryLiveValueBytes);
-    out.live_logical_bytes = frame_u64(f, fh::kSummaryLiveLogicalBytes);
-    out.reachable_leaf_pages = frame_u64(f, fh::kSummaryLeafPages);
-    out.reachable_inner_pages = frame_u64(f, fh::kSummaryInnerPages);
+    out.live_kv                  = frame_u64(f, fh::kSummaryLiveKv);
+    out.live_key_bytes           = frame_u64(f, fh::kSummaryLiveKeyBytes);
+    out.live_value_bytes         = frame_u64(f, fh::kSummaryLiveValueBytes);
+    out.live_logical_bytes       = frame_u64(f, fh::kSummaryLiveLogicalBytes);
+    out.reachable_leaf_pages     = frame_u64(f, fh::kSummaryLeafPages);
+    out.reachable_inner_pages    = frame_u64(f, fh::kSummaryInnerPages);
     out.reachable_overflow_pages = frame_u64(f, fh::kSummaryOverflowPages);
-    out.reachable_page_capacity_bytes = frame_u64(f, fh::kSummaryPageCapacityBytes);
-    out.exact = true;
+    // Version one stores seven little-endian capacity bytes followed by the
+    // exact flag. Masking preserves existing frames without changing offsets.
+    out.reachable_page_capacity_bytes = frame_u64(f, fh::kSummaryPageCapacityBytes) & 0x00ffffffffffffffULL;
+    out.exact                         = true;
     return out;
 }
 
@@ -111,7 +113,7 @@ void frame_set_summary(uint8_t *f, uint32_t page_bytes, const PageSummary &summa
     frame_put_u64(f, fh::kSummaryInnerPages, summary.reachable_inner_pages);
     frame_put_u64(f, fh::kSummaryOverflowPages, summary.reachable_overflow_pages);
     frame_put_u64(f, fh::kSummaryPageCapacityBytes, summary.reachable_page_capacity_bytes);
-    f[fh::kSummaryFlags] = summary.exact ? 1 : 0;
+    f[fh::kSummaryFlags] = summary.exact && summary.reachable_page_capacity_bytes <= 0x00ffffffffffffffULL ? 1 : 0;
     frame_restamp_crc(f, page_bytes);
 }
 
@@ -384,8 +386,12 @@ bool LeafFrameBuilder::try_append_sorted(Slice key, Slice cell)
         return false;
     }
     uint32_t rec_off = free_hi_ - static_cast<uint32_t>(reclen);
-    std::memcpy(f_ + rec_off, key.data(), key.size());
-    std::memcpy(f_ + rec_off + key.size(), cell.data(), cell.size());
+    if (!key.empty()) {
+        std::memcpy(f_ + rec_off, key.data(), key.size());
+    }
+    if (!cell.empty()) {
+        std::memcpy(f_ + rec_off + key.size(), cell.data(), cell.size());
+    }
     uint8_t *slot = f_ + free_lo_;
     frame_put_u32(slot, 0, rec_off);
     frame_put_u32(slot, 4, static_cast<uint32_t>(key.size()));
@@ -419,6 +425,12 @@ void LeafFrameBuilder::finish(uint64_t self_page_id, uint64_t right_sibling)
 bool inner_frame_build(uint8_t *f, uint32_t page_bytes, uint64_t self_page_id, const std::vector<uint64_t> &children,
                        const std::vector<Slice> &separators)
 {
+    return inner_frame_build_span(f, page_bytes, self_page_id, children, separators);
+}
+
+bool inner_frame_build_span(uint8_t *f, uint32_t page_bytes, uint64_t self_page_id, std::span<const uint64_t> children,
+                            std::span<const Slice> separators)
+{
     if (children.size() != separators.size() + 1) {
         return false;
     }
@@ -450,7 +462,9 @@ bool inner_frame_build(uint8_t *f, uint32_t page_bytes, uint64_t self_page_id, c
     for (uint32_t i = 0; i < nsep; ++i) {
         Slice    s       = separators[i];
         uint32_t rec_off = free_hi - static_cast<uint32_t>(s.size());
-        std::memcpy(f + rec_off, s.data(), s.size());
+        if (!s.empty()) {
+            std::memcpy(f + rec_off, s.data(), s.size());
+        }
         uint8_t *slot = f + (free_lo + (i * kInnerSlotSize));
         frame_put_u32(slot, 0, rec_off);
         frame_put_u32(slot, 4, static_cast<uint32_t>(s.size()));
@@ -493,9 +507,13 @@ bool leaf_frame_append_deltas(const uint8_t *src, uint32_t page_bytes, const std
         const leaf_entry &e       = entries[j];
         auto              reclen  = static_cast<uint32_t>(e.key.size() + e.cell.size());
         uint32_t          rec_off = cur_hi - reclen;
-        std::memcpy(out + rec_off, e.key.data(), e.key.size()); // NOLINT(bugprone-not-null-terminated-result)
-        std::memcpy(out + (rec_off + e.key.size()), e.cell.data(),
-                    e.cell.size()); // NOLINT(bugprone-not-null-terminated-result)
+        const Slice       key(e.key);
+        if (!key.empty()) {
+            std::memcpy(out + rec_off, key.data(), key.size());
+        }
+        if (!e.cell.empty()) {
+            std::memcpy(out + (rec_off + key.size()), e.cell.data(), e.cell.size());
+        }
         uint8_t *slot = out + (free_lo + ((delta_count + static_cast<uint32_t>(j)) * kLeafSlotSize));
         frame_put_u32(slot, 0, rec_off);
         frame_put_u32(slot, 4, static_cast<uint32_t>(e.key.size()));

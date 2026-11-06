@@ -1,27 +1,22 @@
 /// <reference types="vitest" />
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { WEB_BASE } from "./src/ports";
 
 // During `npm run dev`, Vite serves the SPA on port 5173 and proxies
-// `/api/*` and `/healthz` to the local Axum backend on 9090 (the
-// crowdb-web default). For production, `npm run build`
+// `/api/*` and `/healthz` to the default local Axum backend.
+// For production, `npm run build`
 // emits to `dist/`, which Axum serves directly via ServeDir.
+const backend = `http://127.0.0.1:${WEB_BASE}`;
+const proxy = { "/api": backend, "/healthz": backend, "/internal": backend };
 export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
-    proxy: {
-      "/api": "http://127.0.0.1:9090",
-      "/healthz": "http://127.0.0.1:9090",
-      "/internal": "http://127.0.0.1:9090",
-    },
+    proxy,
   },
   preview: {
-    proxy: {
-      "/api": "http://127.0.0.1:9090",
-      "/healthz": "http://127.0.0.1:9090",
-      "/internal": "http://127.0.0.1:9090",
-    },
+    proxy,
   },
   build: {
     outDir: "dist",

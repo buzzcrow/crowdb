@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use crowdb_diskdb::ddb_kv_client::DdbKvClient;
 use crowdb_diskdb::recovery::ZoneLoader;
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, RetryConfig};
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient, RetryConfig};
 use crowdb_protocol::common::DiskId;
 use crowdb_protocol::diskdb::rpc::{DiskType, DiskValue};
 
@@ -19,8 +19,8 @@ async fn failed_recovery_does_not_return_writable_disk_group() {
         backoff_base: Duration::from_millis(10),
         backoff_max: Duration::from_millis(10),
     };
-    let kv = CrowdbKvClient::new(config);
-    let port = crowdb_protocol::port::alloc::alloc_test_port(crowdb_protocol::ServicePort::KvServerListen);
+    let kv = PaxosKvClient::new(config);
+    let port = crowdb_protocol::port::alloc::alloc_test_port(crowdb_protocol::ServicePort::PaxosKvServerRpc);
     kv.seed_leader(0, 999, format!("127.0.0.1:{port}"));
     let loader = ZoneLoader::new(Arc::new(DdbKvClient::new(kv)), 1);
     let disk = DiskValue {

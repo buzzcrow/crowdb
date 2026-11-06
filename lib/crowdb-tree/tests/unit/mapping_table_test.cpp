@@ -4,12 +4,13 @@
 // CT5: mapping table tests (alloc/free/recycle, growth, atomic store/load).
 #include "crowdb-tree/epoch.h"
 #include "crowdb-tree/maptable/mapping_slot.h"
-#include "crowdb-tree/maptable/mapping_table.h"
 #include "crowdb-tree/maptable/page.h"
+#include "mapping_table_test_support.h"
 
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <latch>
 #include <thread>
 #include <vector>
 
@@ -27,8 +28,8 @@ PageBase *make_leaf()
 
 TEST(MappingTable, AllocStoreGet)
 {
-    MappingTable mt;
-    uint64_t     page_id = mt.allocate_page_id();
+    TestMappingTable mt;
+    uint64_t         page_id = mt.allocate_page_id();
     EXPECT_NE(page_id, kInvalidPageId);
     EXPECT_EQ(mt.get_resident(page_id), nullptr);
 
@@ -41,7 +42,7 @@ TEST(MappingTable, AllocStoreGet)
 
 TEST(MappingTable, Invalidpage_id)
 {
-    MappingTable mt;
+    TestMappingTable mt;
     EXPECT_EQ(mt.get_resident(kInvalidPageId), nullptr);
     EXPECT_EQ(mt.get_resident(123456), nullptr); // never allocated
 }
@@ -49,8 +50,8 @@ TEST(MappingTable, Invalidpage_id)
 TEST(MappingTable, AllocatePageIdIsMonotonic)
 {
     // Plan-tree #14 D1: PIDs are never recycled, even across many allocations.
-    MappingTable mt;
-    uint64_t     prev = mt.allocate_page_id();
+    TestMappingTable mt;
+    uint64_t         prev = mt.allocate_page_id();
     for (int i = 0; i < 100; ++i) {
         uint64_t next = mt.allocate_page_id();
         EXPECT_GT(next, prev);
@@ -60,17 +61,17 @@ TEST(MappingTable, AllocatePageIdIsMonotonic)
 
 TEST(MappingTable, SegmentGrowth)
 {
-    MappingTable mt;
+    TestMappingTable mt;
     // Allocate enough PIDs to span multiple segments.
     std::vector<uint64_t> pids;
-    pids.reserve((MappingTable::kSegmentSize * 3) + 5);
-    for (uint64_t i = 0; i < (MappingTable::kSegmentSize * 3) + 5; ++i) {
+    pids.reserve((TestMappingTable::kSegmentSize * 3) + 5);
+    for (uint64_t i = 0; i < (TestMappingTable::kSegmentSize * 3) + 5; ++i) {
         pids.push_back(mt.allocate_page_id());
     }
     EXPECT_GE(mt.segments_allocated(), 4U);
     // store + read back across segment boundaries.
     PageBase *page  = make_leaf();
-    uint64_t  cross = pids[MappingTable::kSegmentSize + 1];
+    uint64_t  cross = pids[TestMappingTable::kSegmentSize + 1];
     mt.store(cross, page);
     EXPECT_EQ(mt.get_resident(cross), page);
     delete page;
@@ -78,25 +79,34 @@ TEST(MappingTable, SegmentGrowth)
 
 TEST(MappingTable, ConcurrentReadersSingleWriter)
 {
-    MappingTable mt;
-    uint64_t     page_id = mt.allocate_page_id();
-    PageBase    *p1      = make_leaf();
+    TestMappingTable mt;
+    uint64_t         page_id = mt.allocate_page_id();
+    PageBase        *p1      = make_leaf();
     mt.store(page_id, p1);
 
     std::atomic<bool>        stop{false};
     std::atomic<long>        reads{0};
+    std::latch               started{4};
     std::vector<std::thread> readers;
     readers.reserve(4);
     for (int i = 0; i < 4; ++i) {
         readers.emplace_back([&] {
-            while (!stop.load(std::memory_order_relaxed)) {
+            const auto read = [&] {
                 PageBase *got = mt.get_resident(page_id);
+                EXPECT_NE(got, nullptr);
                 if (got != nullptr) {
+                    EXPECT_EQ(got->page_id, page_id);
                     reads.fetch_add(1, std::memory_order_relaxed);
                 }
+            };
+            read();
+            started.count_down();
+            while (!stop.load(std::memory_order_relaxed)) {
+                read();
             }
         });
     }
+    started.wait();
     // Single writer swaps the slot repeatedly.
     std::vector<PageBase *> garbage;
     for (int i = 0; i < 1000; ++i) {
@@ -118,8 +128,8 @@ TEST(MappingTable, ConcurrentReadersSingleWriter)
 
 TEST(MappingTable, StoreUnloadedGetWord)
 {
-    MappingTable mt;
-    uint64_t     page_id = mt.allocate_page_id();
+    TestMappingTable mt;
+    uint64_t         page_id = mt.allocate_page_id();
     // Store an unloaded descriptor (addr=4096, plen=512, iu=512).
     uint32_t iu   = 512;
     uint64_t addr = 4096;
@@ -139,11 +149,11 @@ TEST(MappingTable, StoreUnloadedGetWord)
 
 TEST(MappingTable, StoreUnloadedRoundUpIu)
 {
-    MappingTable mt;
-    uint64_t     page_id = mt.allocate_page_id();
-    uint32_t     iu      = 4096;
-    uint64_t     addr    = 8192;
-    uint32_t     plen    = 100; // smaller than one IU -> rounds up to 1 IU
+    TestMappingTable mt;
+    uint64_t         page_id = mt.allocate_page_id();
+    uint32_t         iu      = 4096;
+    uint64_t         addr    = 8192;
+    uint32_t         plen    = 100; // smaller than one IU -> rounds up to 1 IU
     mt.store_unloaded(page_id, addr, plen, iu);
 
     uint64_t w = mt.get_word(page_id);
@@ -154,9 +164,9 @@ TEST(MappingTable, StoreUnloadedRoundUpIu)
 
 TEST(MappingTable, ClearSlot)
 {
-    MappingTable mt;
-    uint64_t     page_id = mt.allocate_page_id();
-    PageBase    *page    = make_leaf();
+    TestMappingTable mt;
+    uint64_t         page_id = mt.allocate_page_id();
+    PageBase        *page    = make_leaf();
     mt.store(page_id, page);
     EXPECT_TRUE(is_resident(mt.get_word(page_id)));
 
@@ -168,9 +178,9 @@ TEST(MappingTable, ClearSlot)
 
 TEST(MappingTable, StoreWordPackedUnloaded)
 {
-    MappingTable mt;
-    uint64_t     page_id = mt.allocate_page_id();
-    uint64_t     word    = pack_unloaded(42, 7);
+    TestMappingTable mt;
+    uint64_t         page_id = mt.allocate_page_id();
+    uint64_t         word    = pack_unloaded(42, 7);
     mt.store_word(page_id, word);
 
     uint64_t got = mt.get_word(page_id);
@@ -186,12 +196,12 @@ TEST(MappingTable, SegmentRecycledWhenLastSlotCleared)
 {
     // No epoch manager wired: recycled segments are deleted immediately on
     // the writer thread (fine -- no concurrent readers in this test).
-    MappingTable            mt;
+    TestMappingTable        mt;
     std::vector<uint64_t>   pids;
     std::vector<PageBase *> pages;
-    pids.reserve(MappingTable::kSegmentSize);
-    pages.reserve(MappingTable::kSegmentSize);
-    for (uint64_t i = 0; i < MappingTable::kSegmentSize; ++i) {
+    pids.reserve(TestMappingTable::kSegmentSize);
+    pages.reserve(TestMappingTable::kSegmentSize);
+    for (uint64_t i = 0; i < TestMappingTable::kSegmentSize; ++i) {
         uint64_t  pid = mt.allocate_page_id();
         PageBase *p   = make_leaf();
         mt.store(pid, p);
@@ -203,7 +213,8 @@ TEST(MappingTable, SegmentRecycledWhenLastSlotCleared)
     for (uint64_t i = 0; i + 1 < pids.size(); ++i) {
         mt.clear(pids[i]);
     }
-    EXPECT_EQ(mt.segments_allocated(), 1U); // one live slot left -> not recyclable
+    EXPECT_EQ(mt.segments_allocated(),
+              1U); // one live slot left -> not recyclable
 
     mt.clear(pids.back()); // last live slot -> segment recycles
     EXPECT_EQ(mt.segments_allocated(), 0U);
@@ -219,11 +230,11 @@ TEST(MappingTable, SegmentRecycledWhenLastSlotCleared)
 
 TEST(MappingTable, SegmentNotRecycledWhilePartiallyLive)
 {
-    MappingTable mt;
-    uint64_t     a  = mt.allocate_page_id();
-    uint64_t     b  = mt.allocate_page_id();
-    PageBase    *pa = make_leaf();
-    PageBase    *pb = make_leaf();
+    TestMappingTable mt;
+    uint64_t         a  = mt.allocate_page_id();
+    uint64_t         b  = mt.allocate_page_id();
+    PageBase        *pa = make_leaf();
+    PageBase        *pb = make_leaf();
     mt.store(a, pa);
     mt.store(b, pb);
     ASSERT_EQ(mt.segments_allocated(), 1U);
@@ -243,13 +254,13 @@ TEST(MappingTable, SegmentNotRecycledWhilePartiallyLive)
 
 TEST(MappingTable, SegmentAtReflectsAllocationAndRecycling)
 {
-    MappingTable mt;
+    TestMappingTable mt;
     EXPECT_EQ(mt.segment_at(0), nullptr);
 
     uint64_t  page_id = mt.allocate_page_id();
     PageBase *page    = make_leaf();
     mt.store(page_id, page);
-    MappingSegment *seg = mt.segment_at(0);
+    TestMappingSegment *seg = mt.segment_at(0);
     ASSERT_NE(seg, nullptr);
     EXPECT_TRUE(seg->is_dirty());
 
@@ -260,12 +271,12 @@ TEST(MappingTable, SegmentAtReflectsAllocationAndRecycling)
 
 TEST(MappingTable, CommitSegmentPersistMarksClean)
 {
-    MappingTable mt;
-    uint64_t     page_id = mt.allocate_page_id();
-    PageBase    *page    = make_leaf();
+    TestMappingTable mt;
+    uint64_t         page_id = mt.allocate_page_id();
+    PageBase        *page    = make_leaf();
     mt.store(page_id, page);
 
-    MappingSegment *seg = mt.segment_at(0);
+    TestMappingSegment *seg = mt.segment_at(0);
     ASSERT_NE(seg, nullptr);
     uint64_t seen_seq = seg->write_seq.load();
     ASSERT_TRUE(seg->is_dirty());
@@ -283,16 +294,17 @@ TEST(MappingTable, CommitSegmentPersistMarksClean)
 
 TEST(MappingTable, CommitSegmentPersistSkippedIfWrittenAgainDuringGap)
 {
-    MappingTable mt;
-    uint64_t     page_id = mt.allocate_page_id();
-    PageBase    *page    = make_leaf();
+    TestMappingTable mt;
+    uint64_t         page_id = mt.allocate_page_id();
+    PageBase        *page    = make_leaf();
     mt.store(page_id, page);
 
-    MappingSegment *seg       = mt.segment_at(0);
-    uint64_t        seen_seq  = seg->write_seq.load();
-    uint64_t        page_id_2 = mt.allocate_page_id();
-    PageBase       *page2     = make_leaf();
-    mt.store(page_id_2, page2); // "concurrent" write during the prepare->commit gap
+    TestMappingSegment *seg       = mt.segment_at(0);
+    uint64_t            seen_seq  = seg->write_seq.load();
+    uint64_t            page_id_2 = mt.allocate_page_id();
+    PageBase           *page2     = make_leaf();
+    mt.store(page_id_2,
+             page2); // "concurrent" write during the prepare->commit gap
 
     // The image we "prepared" (at seen_seq) is now stale -- commit must refuse.
     EXPECT_FALSE(mt.commit_segment_persist(0, seg, seen_seq, 1, 4096, 8224, 0xABCD));
@@ -304,13 +316,13 @@ TEST(MappingTable, CommitSegmentPersistSkippedIfWrittenAgainDuringGap)
 
 TEST(MappingTable, CommitSegmentPersistSkippedIfRecycledDuringGap)
 {
-    MappingTable mt;
-    uint64_t     page_id = mt.allocate_page_id();
-    PageBase    *page    = make_leaf();
+    TestMappingTable mt;
+    uint64_t         page_id = mt.allocate_page_id();
+    PageBase        *page    = make_leaf();
     mt.store(page_id, page);
 
-    MappingSegment *seg      = mt.segment_at(0);
-    uint64_t        seen_seq = seg->write_seq.load();
+    TestMappingSegment *seg      = mt.segment_at(0);
+    uint64_t            seen_seq = seg->write_seq.load();
 
     mt.clear(page_id); // recycles segment 0 (no epoch wired -> deleted immediately)
     EXPECT_EQ(mt.segment_at(0), nullptr);
@@ -325,14 +337,15 @@ TEST(MappingTable, CommitSegmentPersistSkippedIfRecycledDuringGap)
 
 TEST(MappingTable, InstallRecoveredSegmentIsNotDirty)
 {
-    MappingTable          mt;
-    std::vector<uint64_t> words(MappingTable::kSegmentSize, 0);
+    TestMappingTable      mt;
+    std::vector<uint64_t> words(TestMappingTable::kSegmentSize, 0);
     words[5] = pack_unloaded(42, 3);
 
-    mt.install_recovered_segment(2, /*generation=*/7, /*live_count=*/1, words, /*image_addr=*/8192,
+    mt.install_recovered_segment(2, /*generation=*/7, /*live_count=*/1, words,
+                                 /*image_addr=*/8192,
                                  /*image_len=*/8224, /*image_crc=*/0x99);
 
-    MappingSegment *seg = mt.segment_at(2);
+    TestMappingSegment *seg = mt.segment_at(2);
     ASSERT_NE(seg, nullptr);
     EXPECT_FALSE(seg->is_dirty());
     EXPECT_EQ(seg->generation.load(), 7U);
@@ -342,7 +355,7 @@ TEST(MappingTable, InstallRecoveredSegmentIsNotDirty)
     EXPECT_EQ(seg->image_crc, 0x99U);
 
     // Recovered PID 2*kSegmentSize + 5 reads back as the installed descriptor.
-    uint64_t recovered_pid = (2 * MappingTable::kSegmentSize) + 5;
+    uint64_t recovered_pid = (2 * TestMappingTable::kSegmentSize) + 5;
     uint64_t w             = mt.get_word(recovered_pid);
     EXPECT_TRUE(is_unloaded(w));
     EXPECT_EQ(unloaded_iu_index(w), 42U);
@@ -351,8 +364,8 @@ TEST(MappingTable, InstallRecoveredSegmentIsNotDirty)
 
 TEST(MappingTable, RecycledSegmentFreedOnlyAfterEpochGuardDrains)
 {
-    MappingTable mt;
-    EpochManager epoch;
+    TestMappingTable mt;
+    EpochManager     epoch;
     mt.set_epoch_manager(&epoch);
 
     uint64_t  page_id = mt.allocate_page_id();
@@ -368,7 +381,8 @@ TEST(MappingTable, RecycledSegmentFreedOnlyAfterEpochGuardDrains)
         mt.clear(page_id); // last live slot -> segment CAS'd out and retired
         EXPECT_EQ(mt.segments_allocated(), 0U);
         EXPECT_EQ(epoch.pending_retired(), 1U);
-        EXPECT_EQ(epoch.try_reclaim(), 0U); // the open guard could still see it -> not freed
+        EXPECT_EQ(epoch.try_reclaim(),
+                  0U); // the open guard could still see it -> not freed
     }
     EXPECT_EQ(epoch.try_reclaim(), 1U); // now safe to free
     EXPECT_EQ(epoch.pending_retired(), 0U);

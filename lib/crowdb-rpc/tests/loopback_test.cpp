@@ -40,7 +40,7 @@ struct LoopbackState
     std::vector<uint8_t> expected_payload;
 };
 
-extern "C" void loopback_on_complete(uint64_t request_id, crowdb_rpc_buffer_t /*control*/, crowdb_rpc_buffer_t data,
+extern "C" void loopback_on_complete(uint64_t request_id, crowdb_rpc_buffer_t control, crowdb_rpc_buffer_t data,
                                      crowdb_rpc_status status, void *user_data)
 {
     auto *s = static_cast<LoopbackState *>(user_data);
@@ -56,6 +56,7 @@ extern "C" void loopback_on_complete(uint64_t request_id, crowdb_rpc_buffer_t /*
     if (data != nullptr) {
         crowdb_rpc_buffer_release(data);
     }
+    crowdb_rpc_buffer_release(control);
     s->got_response.store(true, std::memory_order_release);
 }
 

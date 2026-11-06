@@ -9,12 +9,12 @@ mod recovery;
 mod space_reuse;
 
 use crowdb_diskdb_client::{DiskdbClient, DiskdbRpcTransport, RetryConfig};
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient, ServiceRegistryClient};
 use std::sync::Arc;
 
-fn kv_client() -> CrowdbKvClient {
+fn kv_client() -> PaxosKvClient {
     let addresses: Vec<String> = serde_json::from_str(&std::env::var("CROWDB_E2E_RPC").unwrap()).unwrap();
-    CrowdbKvClient::new(ClientConfig::new(vec![format!("http://{}:7000", addresses[0])]))
+    PaxosKvClient::new(ClientConfig::new(vec![format!("http://{}:7000", addresses[0])]))
 }
 
 fn registry() -> ServiceRegistryClient {

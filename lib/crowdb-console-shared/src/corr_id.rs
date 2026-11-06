@@ -6,8 +6,8 @@
 //! Every console request (CLI invocation, web handler call) runs inside
 //! a `tokio` task-local that carries an opaque 16-hex-char correlation
 //! id. Outbound HTTP/crowdb-rpc clients attach this id as the
-//! `x-crowdb-kv-corr-id` header so a single user action shows up linked
-//! across console + every upstream `crowdb-kv-server` it touched.
+//! `x-crowdb-paxos-kv-corr-id` header so a single user action shows up linked
+//! across console + every upstream `crowdb-paxos-kv-server` it touched.
 //!
 //! Key work: task-local storage with `scope`/`scope_in`, generators
 //! (`new`, `current_or_new`), and the canonical header constant.
@@ -20,9 +20,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// HTTP header name carrying the correlation id between console
-/// components and upstream `crowdb-kv-server`. Lowercase per RFC 7230;
-/// `crowdb-kv-server` will recognise it once the tracing middleware lands.
-pub const HEADER: &str = "x-crowdb-kv-corr-id";
+/// components and upstream `crowdb-paxos-kv-server`. Lowercase per RFC 7230;
+/// `crowdb-paxos-kv-server` will recognise it once the tracing middleware lands.
+pub const HEADER: &str = "x-crowdb-paxos-kv-corr-id";
 
 tokio::task_local! {
     /// Per-task correlation id. Reading via `try_with` returns `None`

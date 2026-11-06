@@ -51,7 +51,10 @@ pub(super) fn node_profile(config: &super::NodeRuntimeConfig) -> Result<Deployme
         .find(|service| service.id == "kv")
         .ok_or("node profile requires KV service")?
         .env
-        .insert("CROWDB_KV_MANAGEMENT_ADVERTISE_ADDR".into(), address.to_string());
+        .insert(
+            "CROWDB_PAXOS_KV_MANAGEMENT_ADVERTISE_ADDR".into(),
+            address.to_string(),
+        );
     Ok(profile)
 }
 
@@ -173,7 +176,7 @@ async fn spawn(
     }
     let mut kv = service(profile, "kv")?;
     kv.env.insert(
-        "CROWDB_KV_CLUSTER_ID".into(),
+        "CROWDB_PAXOS_KV_CLUSTER_ID".into(),
         accepted.bootstrap.cluster_id.clone(),
     );
     let root = profile

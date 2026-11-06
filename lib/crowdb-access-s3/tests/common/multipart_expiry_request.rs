@@ -13,7 +13,7 @@ use crowdb_access_s3::{
     storage::S3StorageClients,
 };
 use crowdb_chunk_kv_client::ClientError;
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
+use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient};
 use crowdb_protocol::{chunkdb::rpc::Location, common::ChunkId};
 
 use super::{actor::TestProbe, retrieval_storage::TestReadStorage};
@@ -122,7 +122,7 @@ impl TestExpiry {
 fn executor(store: Arc<ChunkKvMetadataStore>, chunks: &Arc<TestReadStorage>) -> S3Executor {
     S3Executor::new(
         S3StorageClients {
-            control: Arc::new(CrowdbKvClient::new(ClientConfig::new(Vec::new()))),
+            control: Arc::new(PaxosKvClient::new(ClientConfig::new(Vec::new()))),
             metadata: store,
             chunks: Arc::new(chunks.client()),
         },

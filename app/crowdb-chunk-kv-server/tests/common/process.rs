@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use crowdb_kv_client::{StreamProcessAuthority, StreamProcessLeaseTiming};
+use crowdb_paxos_kv_client::{StreamProcessAuthority, StreamProcessLeaseTiming};
 use crowdb_protocol::chunk_stream::{StreamProcessIdentity, StreamProcessLease, StreamPurpose};
 use std::{sync::Arc, time::Instant};
 
@@ -22,6 +22,7 @@ impl TestProcess {
                     prior_exclusion_deadline_ms: 0,
                     grant_sequence: 0,
                     grant_expires_at_ms: 0,
+                    revoked: false,
                 },
                 StreamProcessLeaseTiming::default(),
                 1_000,

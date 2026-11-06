@@ -132,7 +132,7 @@ impl KeepAlive {
             // published before its strict background loader can expose allocations.
             group.remove_disk_from_memory(&old.disk_id);
             self.disk_add_init(group, old.disk_id, &disk);
-            Ok::<(), crowdb_kv_client::Error>(())
+            Ok::<(), crowdb_paxos_kv_client::Error>(())
         }
         .await;
         if let Err(error) = result {

@@ -82,7 +82,7 @@ fn persistent_namespace_reopens_saved_assignments() {
         let mut persistent =
             RuntimeNamespace::persistent(&root, "mini-cluster").expect("create persistent namespace");
         persistent
-            .assign_port(ServicePort::KvServerMgmt, 0)
+            .assign_port(ServicePort::PaxosKvServerMgmt, 0)
             .expect("assign persistent port")
     };
 
@@ -90,7 +90,7 @@ fn persistent_namespace_reopens_saved_assignments() {
         RuntimeNamespace::persistent(&root, "mini-cluster").expect("reopen persistent namespace");
     assert_eq!(
         reopened
-            .assign_port(ServicePort::KvServerMgmt, 0)
+            .assign_port(ServicePort::PaxosKvServerMgmt, 0)
             .expect("reuse persistent port"),
         first_port
     );

@@ -172,7 +172,7 @@ pub fn timestamp_secs() -> String {
 ///
 /// If `RUST_LOG` is set and non-empty, the first global directive (the
 /// part before any `=`) is used — e.g. `RUST_LOG=debug` → `"debug"`,
-/// `RUST_LOG=crowdb_kv=info` → `"info"`. If `RUST_LOG` is unset or
+/// `RUST_LOG=crowdb_paxos_kv=info` → `"info"`. If `RUST_LOG` is unset or
 /// empty, `fallback` is used. If the derived level is not a valid
 /// spdlog level, `"info"` is returned.
 #[must_use]
@@ -250,7 +250,7 @@ fn civil_from_days(days: u64) -> (i64, i64, i64) {
 ///
 /// `default_filter` is the `EnvFilter` directive string used when
 /// `RUST_LOG` is unset — callers pass their own project-specific
-/// default (e.g. `crowdb_kv` passes its `crowdb_kv`/`crowdb_kv_server`/... list)
+/// default (e.g. `crowdb_paxos_kv` passes its `crowdb_paxos_kv`/`crowdb_paxos_kv_server`/... list)
 /// so the shared library does not bake in one project's targets.
 ///
 /// # Errors
@@ -424,7 +424,7 @@ pub fn init_file_and_console_logging_split(
 ///
 /// `default_filter` is the `EnvFilter` directive string used when
 /// `RUST_LOG` is unset — callers pass their own project-specific
-/// default (e.g. `crowdb_kv` passes its `crowdb_kv`/`crowdb_kv_server`/... list)
+/// default (e.g. `crowdb_paxos_kv` passes its `crowdb_paxos_kv`/`crowdb_paxos_kv_server`/... list)
 /// so the shared library does not bake in one project's targets.
 ///
 /// # Errors
@@ -495,7 +495,7 @@ mod tests {
     #[test]
     fn cpp_level_target_directive_uses_fallback() {
         let _guard = rust_log_lock().lock().unwrap();
-        std::env::set_var("RUST_LOG", "crowdb_kv=info");
+        std::env::set_var("RUST_LOG", "crowdb_paxos_kv=info");
         assert_eq!(cpp_level_from_rust_log("info"), "info");
         std::env::remove_var("RUST_LOG");
     }

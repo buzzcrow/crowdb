@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use arc_swap::ArcSwap;
-use crowdb_kv_client::StreamProcessAuthority;
+use crowdb_paxos_kv_client::StreamProcessAuthority;
 use crowdb_protocol::chunk_kv::{DomainMonitorDescriptor, Id128, InstanceHealth, ServingGrant};
 use thiserror::Error;
 

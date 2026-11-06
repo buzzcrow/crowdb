@@ -6,11 +6,11 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use crowdb_chunkdb::storage::{decode_chunk_for_tests, encode_chunk_for_tests};
-use crowdb_kv::cluster::group::{ProposeResult, PxGroup};
-use crowdb_kv::cluster::{PxLocalReplica, PxLocalReplicaRole};
-use crowdb_kv::kv::{CrowdbTreeConfig, CrowdbTreeEngine, KVEngine};
-use crowdb_kv::paxos::learner::PxLearner;
-use crowdb_kv::paxos::roles::{PxBallot, PxLogEntry};
+use crowdb_paxos_kv::cluster::group::{ProposeResult, PxGroup};
+use crowdb_paxos_kv::cluster::{PxLocalReplica, PxLocalReplicaRole};
+use crowdb_paxos_kv::kv::{CrowdbTreeConfig, CrowdbTreeEngine, KVEngine};
+use crowdb_paxos_kv::paxos::learner::PxLearner;
+use crowdb_paxos_kv::paxos::roles::{PxBallot, PxLogEntry};
 use crowdb_protocol::chunkdb::rpc::{Chunk, ChunkType};
 use crowdb_protocol::common::ChunkId;
 
@@ -97,13 +97,30 @@ async fn journal_cas_retains_future_revision_through_flush_and_reopen() {
     handle.flush().unwrap();
     assert_eq!(handle.snapshot().unwrap(), 851);
 
-    learn(&group, 853, encode_puts(&[(&chunk_key(), &metadata(60, 24040))])).await;
+    let pending_group = Arc::clone(&group);
+    let pending = tokio::spawn(async move {
+        learn(
+            &pending_group,
+            853,
+            encode_puts(&[(&chunk_key(), &metadata(60, 24040))]),
+        )
+        .await;
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while group.local_replica().last_chosen_slot() < 853 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("slot 853 must be chosen while its contiguous apply waits for 852");
     let engine = group.local_replica().learner.engine();
-    // Keep slot 852 absent: every maintenance pass must retain the future value.
+    // The chosen task owns the future value until the gap is repaired. Flush
+    // must preserve that work while reads still observe the contiguous prefix.
     for _ in 0..3 {
         handle.flush().unwrap();
         assert_eq!(handle.snapshot().unwrap(), 851);
-        assert_metadata(engine, 853, 60, 24040).await;
+        assert_metadata(engine, 843, 58, 23039).await;
+        assert!(!pending.is_finished(), "future apply must wait for the gap");
     }
     group.set_next_slot(854);
     let journal: Vec<u8> = (0..24643).map(|i| u8::try_from(i % 251).unwrap()).collect();
@@ -116,10 +133,14 @@ async fn journal_cas_retains_future_revision_through_flush_and_reopen() {
         tokio::task::yield_now().await;
         handle.flush().unwrap();
         assert_eq!(handle.snapshot().unwrap(), 851);
-        assert_metadata(engine, 853, 60, 24040).await;
+        assert_metadata(engine, 843, 58, 23039).await;
         assert!(!cas.is_finished(), "the apply fence must not cross the gap");
     }
     learn(&group, 852, Vec::new()).await;
+    tokio::time::timeout(Duration::from_secs(5), pending)
+        .await
+        .expect("gap repair must release the chosen apply")
+        .unwrap();
     let result = tokio::time::timeout(Duration::from_secs(5), cas)
         .await
         .unwrap()

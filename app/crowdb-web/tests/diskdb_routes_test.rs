@@ -18,7 +18,7 @@ use std::time::Duration;
 mod memory_kv;
 
 use crowdb_console_shared::{ConsoleConfig, DiskGroupEntry, NodeEntry, RackEntry, ServerEntry};
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient};
+use crowdb_paxos_kv_client::{ClientConfig, HardwareClient, PaxosKvClient};
 use crowdb_protocol::{
     common::{NodeValue, RackValue},
     diskdb::rpc::DiskGroupValue,
@@ -70,7 +70,7 @@ async fn spawn_web_with_config(mut cfg: ConsoleConfig, with_group0: bool) -> Soc
     let kv = if let Some(cluster) = &cluster {
         cfg.servers
             .push(ServerEntry::new("metadata", &cluster.mgmt_endpoints[0]));
-        let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(
+        let kv = Arc::new(PaxosKvClient::new(ClientConfig::new(
             cluster.mgmt_endpoints.clone(),
         )));
         kv.seed_leader(0, 0, cluster.group0_leader_endpoint.clone());

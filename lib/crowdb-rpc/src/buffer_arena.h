@@ -58,13 +58,6 @@ class BufferArena : public BufferPool, public std::enable_shared_from_this<Buffe
     uint32_t pop_entry(std::atomic<uint64_t> &head);
     void     push_entry(std::atomic<uint64_t> &head, uint32_t index);
 
-    struct DetachedRelease
-    {
-        BufferArena *arena;
-        uint32_t     index;
-        Buffer      *buffer;
-    };
-
-    static void release_detached(void *context);
+    static void release_detached(void *context, Buffer *buffer);
 };
 } // namespace crowdb::rpc

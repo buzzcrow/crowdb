@@ -9,16 +9,23 @@ use crate::error::CtError;
 use crate::reactor::{
     drive_ct_future, try_poll_ct_future, try_poll_ct_future_pinned, FutureGuard, FutureKind, PinnedValue,
 };
-use crate::scan::{decode_scan, ScanDirection, ScanEntry};
+use crate::scan::{ScanDirection, ScanEntry, ScanOptions};
 use crate::sys;
 use crate::tree::Crowdbtree;
 use crate::Config;
 
-/// Async facade. `get`/`flush`/`snapshot`/`scan` drive the engine's io_uring
-/// reactor directly via [`drive_ct_future`] -- no thread pool hop. The
-/// remaining methods have no async C API twin yet and are called via the
-/// synchronous `Crowdbtree` handle (`handle()`). Cheap to clone (shares
-/// one `Arc<Crowdbtree>`).
+mod compaction;
+pub use compaction::{CompactionOptions, CompactionReport};
+mod chunk_collection;
+mod maintenance;
+mod owned_get;
+pub use chunk_collection::ChunkCollectionReport;
+pub use owned_get::OwnedGetOutcome;
+mod scan;
+
+/// Async facade over native operation futures. Runtime Trees execute CPU work
+/// on their shared native pool; [`drive_ct_future`] polls completion and the
+/// backend reactor without blocking the Rust executor. Clones share one Tree.
 #[derive(Clone, Debug)]
 pub struct AsyncCrowdbtree {
     inner: Arc<Crowdbtree>,
@@ -29,6 +36,12 @@ impl AsyncCrowdbtree {
         Ok(Self {
             inner: Arc::new(Crowdbtree::open(opt)?),
         })
+    }
+
+    /// Share an existing Tree without opening another writer or storage domain.
+    #[must_use]
+    pub fn from_handle(inner: Arc<Crowdbtree>) -> Self {
+        Self { inner }
     }
 
     pub fn from_sync(tree: Crowdbtree) -> Self {
@@ -48,40 +61,26 @@ impl AsyncCrowdbtree {
     /// Await the native flush completion. The native worker waits for the
     /// captured MemTable writers without blocking this executor thread.
     pub async fn flush(&self) -> Result<(), CtError> {
-        let fut = unsafe { sys::ct_flush_async(self.inner.as_ptr()) };
-        drive_ct_future(FutureGuard(fut), &self.inner, FutureKind::Flush).await?;
-        Ok(())
+        self.flush_report().await?.status
     }
 
-    /// Drives the engine's io_uring reactor directly (Phase
-    /// 3) -- no `spawn_blocking`; the write phase always waits on the
-    /// reactor, unlike `flush`/the fast `get` path.
+    /// Awaits the captured checkpoint, including its backend completion.
     pub async fn snapshot(&self) -> Result<u64, CtError> {
-        let fut = unsafe { sys::ct_snapshot_async(self.inner.as_ptr()) };
-        Ok(
-            drive_ct_future(FutureGuard(fut), &self.inner, FutureKind::Snapshot)
-                .await?
-                .slot,
-        )
+        let report = self.checkpoint_report().await?;
+        report.status?;
+        Ok(report.durable_coverage)
     }
 
-    /// Drives the engine's io_uring reactor directly (Phase
-    /// 3) -- no `spawn_blocking`. Resolves on the very first poll for a
-    /// resident hit (`get_view`'s existing fast path, `#5 B3`); only a
-    /// genuine demand-load miss waits on the reactor.
+    /// Awaits a native point read dispatched through the shared CPU pool.
     pub async fn get(&self, key: Vec<u8>) -> Result<Option<(u64, Vec<u8>)>, CtError> {
         let fut = unsafe { sys::ct_get_async(self.inner.as_ptr(), key.as_ptr(), key.len()) };
         let out = drive_ct_future(FutureGuard(fut), &self.inner, FutureKind::Get).await?;
         Ok(out.found.then_some((out.slot, out.value)))
     }
 
-    /// Like [`Self::get`], but never allocates or boxes anything for the
-    /// fast (resident hit/miss) path -- only the genuine demand-load-miss
-    /// path (`GetOutcome::Pending`) does. Lets a caller with its own
-    /// fast-path/slow-path return type (`crowdb_kv`'s `KVFuture`,     /// #11 Phase 6) mirror `ct_get_async`'s own C++-layer split one layer
-    /// up, instead of collapsing it back into a uniform `async fn` (which
-    /// would force boxing on every call, fast path included -- exactly what
-    /// `KVFuture::Ready` exists to avoid).
+    /// Returns a result immediately if the first native poll completes;
+    /// otherwise boxes a pending future. Native operation and result storage
+    /// still allocate; runtime operations charge their admitted storage.
     pub fn try_get(&self, key: &[u8]) -> GetOutcome {
         let fut = unsafe { sys::ct_get_async(self.inner.as_ptr(), key.as_ptr(), key.len()) };
         let mut guard = FutureGuard(fut);
@@ -113,13 +112,11 @@ impl AsyncCrowdbtree {
         }))
     }
 
-    /// Async twin of [`Crowdbtree::scan`] (follow-up). Drives
-    /// the reactor directly like `get`/`flush`/`snapshot` -- resolves on the
-    /// first poll whenever every leaf in range is already resident
-    /// (`scan`'s own fast path), only waiting on the reactor for a
-    /// genuine cold leaf (or the initial root->leaf descent). See
-    /// `Crowdbtree::scan_async`'s doc comment (crowdb-tree.h) for why a miss
-    /// retries the whole scan rather than resuming a cursor.
+    /// Async twin of [`Crowdbtree::scan`]. Runtime scans retain one captured
+    /// publication across internal windows and keep the native allocation
+    /// owner in every returned `Bytes` slice. Resume truncated output from
+    /// its last key, even when the requested limit is zero. Use
+    /// [`Self::scan_with_options`] to resume from an empty last key.
     #[allow(clippy::too_many_arguments)]
     pub async fn scan(
         &self,
@@ -158,33 +155,22 @@ impl AsyncCrowdbtree {
         deadline_ms: u64,
         direction: ScanDirection,
     ) -> Result<(Vec<ScanEntry>, bool), CtError> {
-        let fut = unsafe {
-            sys::ct_scan_directional_async(
-                self.inner.as_ptr(),
-                prefix.as_ptr(),
-                prefix.len(),
-                start_after.as_ptr(),
-                start_after.len(),
-                end_key.as_ptr(),
-                end_key.len(),
-                limit,
-                byte_budget,
-                if keys_only { 1 } else { 0 },
-                deadline_ms,
-                i32::from(direction == ScanDirection::Reverse),
-            )
-        };
-        let out = drive_ct_future(FutureGuard(fut), &self.inner, FutureKind::Scan).await?;
-        let entries = decode_scan(out.value, out.slot as usize)?;
-        Ok((entries, out.found))
+        self.scan_with_options(ScanOptions {
+            prefix,
+            start: (!start_after.is_empty()).then_some(start_after),
+            end: end_key,
+            limit,
+            byte_budget,
+            keys_only,
+            deadline_ms,
+            direction,
+            ..Default::default()
+        })
+        .await
     }
 
-    /// Like [`Self::try_get`], but for [`Self::scan`]: never allocates or
-    /// boxes anything for the fast (all-leaves-resident) path -- only a
-    /// genuine cold-leaf miss (`ScanOutcome::Pending`) does. Same
-    /// motivation as `try_get`'s doc comment: lets a caller with its own
-    /// fast-path/slow-path return type mirror `ct_scan_async`'s own
-    /// C++-layer split one layer up instead of forcing a box on every call.
+    /// Like [`Self::try_get`], returns ready scan output on the first native
+    /// completion poll and boxes a future only when that poll is pending.
     #[allow(clippy::too_many_arguments)]
     pub fn try_scan(
         &self,
@@ -208,7 +194,7 @@ impl AsyncCrowdbtree {
         )
     }
 
-    /// Nonallocating-fast-path directional scan.
+    /// Directional scan with an immediate first completion poll.
     #[allow(clippy::too_many_arguments)]
     pub fn try_scan_directional(
         &self,
@@ -221,35 +207,17 @@ impl AsyncCrowdbtree {
         deadline_ms: u64,
         direction: ScanDirection,
     ) -> ScanOutcome {
-        let fut = unsafe {
-            sys::ct_scan_directional_async(
-                self.inner.as_ptr(),
-                prefix.as_ptr(),
-                prefix.len(),
-                start_after.as_ptr(),
-                start_after.len(),
-                end_key.as_ptr(),
-                end_key.len(),
-                limit,
-                byte_budget,
-                if keys_only { 1 } else { 0 },
-                deadline_ms,
-                i32::from(direction == ScanDirection::Reverse),
-            )
-        };
-        let mut guard = FutureGuard(fut);
-        if let Some(result) = try_poll_ct_future(&mut guard, FutureKind::Scan) {
-            return ScanOutcome::Ready(result.and_then(|out| {
-                let entries = decode_scan(out.value, out.slot as usize)?;
-                Ok((entries, out.found))
-            }));
-        }
-        let tree = self.inner.clone();
-        ScanOutcome::Pending(Box::pin(async move {
-            let out = drive_ct_future(guard, &tree, FutureKind::Scan).await?;
-            let entries = decode_scan(out.value, out.slot as usize)?;
-            Ok((entries, out.found))
-        }))
+        self.try_scan_with_options(ScanOptions {
+            prefix,
+            start: (!start_after.is_empty()).then_some(start_after),
+            end: end_key,
+            limit,
+            byte_budget,
+            keys_only,
+            deadline_ms,
+            direction,
+            ..Default::default()
+        })
     }
 }
 
@@ -257,11 +225,9 @@ impl AsyncCrowdbtree {
 /// exists instead of a single uniform `async fn`.
 #[allow(clippy::type_complexity)]
 pub enum GetOutcome {
-    /// Resolved on the very first (and only) poll attempt -- no allocation.
+    /// Resolved on the first poll without boxing a Rust future.
     Ready(Result<Option<(u64, Vec<u8>)>, CtError>),
-    /// A genuine demand-load miss, already registered with the reactor
-    /// (or, absent one, that will complete synchronously on the next poll
-    /// regardless -- `.await` this to completion.
+    /// Native CPU or I/O work is pending; await its completion.
     Pending(Pin<Box<dyn Future<Output = Result<Option<(u64, Vec<u8>)>, CtError>> + Send>>),
 }
 
@@ -269,12 +235,9 @@ pub enum GetOutcome {
 /// this exists instead of a single uniform `async fn`.
 #[allow(clippy::type_complexity)]
 pub enum ScanOutcome {
-    /// Resolved on the very first (and only) poll attempt -- no allocation
-    /// beyond the returned entries themselves.
+    /// Resolved on the first poll without boxing a Rust future.
     Ready(Result<(Vec<ScanEntry>, bool), CtError>),
-    /// A genuine cold-leaf miss, already registered with the reactor (or,
-    /// absent one, that will complete synchronously on the next poll
-    /// regardless -- `.await` this to completion.
+    /// Native CPU or I/O work is pending; await its completion.
     Pending(Pin<Box<dyn Future<Output = Result<(Vec<ScanEntry>, bool), CtError>> + Send>>),
 }
 

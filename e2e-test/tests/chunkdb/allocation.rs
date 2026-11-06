@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use crowdb_chunkdb::allocator::DiskdbClientPool;
-use crowdb_kv_client::ServiceRegistryClient;
+use crowdb_paxos_kv_client::ServiceRegistryClient;
 use std::sync::atomic::Ordering;
 
 use crate::common::rpc_response_proxy::TestResponseProxy;

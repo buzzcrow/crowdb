@@ -21,7 +21,7 @@ async fn disk_drilldown_uses_persisted_binding_without_local_process_observation
             0,
             0,
             b"/deployment/cluster",
-            crowdb_kv_client::ReadMode::Linearizable,
+            crowdb_paxos_kv_client::ReadMode::Linearizable,
             None
         )
         .await

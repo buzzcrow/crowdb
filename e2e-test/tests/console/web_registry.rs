@@ -1,6 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+use crowdb_protocol::port::ports::WEB_BASE;
 use reqwest::{Client, StatusCode};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -14,7 +15,7 @@ async fn bare_metal_web_loads_launch_policy_without_restoring_topology() {
     let data = PathBuf::from(mounts["host_data"][0].as_str().unwrap());
     let identity_path = data.join("launches.runtime/701-kv.json");
     let addresses = crate::common::management::addresses(1);
-    let base = format!("http://{}:9090", addresses[0]);
+    let base = format!("http://{}:{WEB_BASE}", addresses[0]);
     let http = Client::builder().timeout(Duration::from_secs(3)).build().unwrap();
     let response = http.get(format!("{base}/api/launches")).send().await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);

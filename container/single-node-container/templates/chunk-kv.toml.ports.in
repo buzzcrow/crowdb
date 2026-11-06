@@ -1,0 +1,32 @@
+instance_id = 1
+node_id = {{node.0.id}}
+rpc_listen_addr = "127.0.0.1:@CHUNK_KV_RPC_BASE@"
+rpc_advertise_addr = "127.0.0.1:@CHUNK_KV_RPC_BASE@"
+http_listen_addr = "127.0.0.1:@CHUNK_KV_HTTP_BASE@"
+http_advertise_addr = "127.0.0.1:@CHUNK_KV_HTTP_BASE@"
+group0_mgmt_seeds = ["http://127.0.0.1:@PAXOS_KV_SERVER_MGMT_BASE@"]
+catalog_refresh_interval_ms = 200
+rpc_workers = 1
+
+[balance]
+enabled = false
+target_partitions_per_owner = 1
+target_partition_bytes = 9223372036854775807
+minimum_weighted_improvement_percent = 100
+cooldown_ms = 9223372036854775807
+max_owner_request_rate = 0
+
+[storage]
+metadata_store_id = 0
+stream_mirror_copies = 1
+tree_chunk_capacity_bytes = 16777216
+stream_chunk_capacity_bytes = 16777216
+diskio_connections_per_endpoint = 1
+diskio_rpc_workers = 1
+
+[bootstrap_partition]
+partition_id = { high = 1, low = 1 }
+tree_id = 1
+stream_name = { high = 2, low = 1 }
+owner_epoch = 1
+metadata_group_id = {{group.1.id}}

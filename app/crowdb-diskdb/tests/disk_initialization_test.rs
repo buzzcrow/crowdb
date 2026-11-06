@@ -149,7 +149,10 @@ async fn atomic_multi_disk_rejection_does_not_poison_unsubmitted_writes() {
     assert!(second.write_gate.quiescent());
 }
 
-async fn prepare_hardware(metadata: &TestMetadata, status: HwStatus) -> crowdb_kv_client::HardwareClient {
+async fn prepare_hardware(
+    metadata: &TestMetadata,
+    status: HwStatus,
+) -> crowdb_paxos_kv_client::HardwareClient {
     let hw = metadata.make_hardware_client();
     let id = DiskId { high: 4, low: 5 };
     hw.add_rack(

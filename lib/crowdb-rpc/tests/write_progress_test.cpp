@@ -128,6 +128,47 @@ class SocketWriteProgressTest : public ::testing::TestWithParam<bool>
 {
 };
 
+TEST(SocketWriteProgress, ConcurrentPendingInspectionDuringPartialSendAndClose)
+{
+    int sockets[2]{};
+    ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets), 0);
+    ASSERT_NE(::fcntl(sockets[0], F_SETFL, ::fcntl(sockets[0], F_GETFL, 0) | O_NONBLOCK), -1);
+    const int send_bytes = 4096;
+    ASSERT_EQ(::setsockopt(sockets[0], SOL_SOCKET, SO_SNDBUF, &send_bytes, sizeof(send_bytes)), 0);
+    crowdb::rpc::SystemBufferPool pool;
+    crowdb::rpc::Connection       connection(1, "pending-inspection", &pool);
+    std::vector<uint8_t>          bytes(PAYLOAD_BYTES, 0x5a);
+    auto                         *data = pool.alloc(PAYLOAD_BYTES);
+    data->write(bytes.data(), PAYLOAD_BYTES);
+    auto *control = crowdb::rpc::build_ping_request(&pool, 42, 1);
+    ASSERT_TRUE(connection.enqueue_send(crowdb::rpc::build_out_frame(42, 42, control, data)));
+
+    std::atomic<uint64_t> observations{0};
+    std::jthread          observer([&](std::stop_token stop) {
+        while (!stop.stop_requested()) {
+            if (connection.has_pending_send()) {
+                observations.fetch_add(1, std::memory_order_relaxed);
+            }
+            std::this_thread::yield();
+        }
+    });
+    while (observations.load(std::memory_order_relaxed) == 0) {
+        std::this_thread::yield();
+    }
+    // The peer does not read: the first send is partial and later calls hit
+    // EAGAIN while the reader inspects the connection without send ownership.
+    for (int i = 0; i < 100; ++i) {
+        EXPECT_FALSE(connection.try_send(sockets[0], nullptr));
+        EXPECT_TRUE(connection.has_pending_send());
+    }
+    connection.close();
+    EXPECT_FALSE(connection.has_pending_send());
+    observer.request_stop();
+    observer.join();
+    ::close(sockets[0]);
+    ::close(sockets[1]);
+}
+
 TEST_P(SocketWriteProgressTest, ConcurrentRearmSurvivesAnEarlierEmptyWritableEvent)
 {
     int sockets[2]{};

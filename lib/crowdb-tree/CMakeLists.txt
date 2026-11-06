@@ -18,6 +18,9 @@ if(CROWDB_TREE_SANITIZER)
   message(STATUS "crowdb-tree sanitizer: ${CROWDB_TREE_SANITIZER}")
   add_compile_options(-fsanitize=${CROWDB_TREE_SANITIZER} -fno-omit-frame-pointer -g)
   add_link_options(-fsanitize=${CROWDB_TREE_SANITIZER})
+  if(CROWDB_TREE_SANITIZER STREQUAL "thread")
+    set(CROWDB_COMMON_SPDLOG_HEADER_ONLY ON)
+  endif()
 endif()
 
 # ── liburing (io_uring reactor) ────────────────────────────────────
@@ -39,6 +42,21 @@ find_library(LIBURING_LIB NAMES uring HINTS ENV CONDA_PREFIX PATH_SUFFIXES lib)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../crowdb-common/cpp crowdb-common-build)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../crowdb-rpc crowdb-rpc-build EXCLUDE_FROM_ALL)
 
+# Audited allocator hooks are generated outside the pinned vendor checkout.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(CROWDB_STDEXEC_SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/../../third-party/stdexec/include)
+set(CROWDB_STDEXEC_OVERLAY ${CMAKE_CURRENT_BINARY_DIR}/stdexec-pool)
+file(GLOB_RECURSE CROWDB_STDEXEC_HEADERS CONFIGURE_DEPENDS ${CROWDB_STDEXEC_SOURCE}/*)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+  ${CROWDB_STDEXEC_HEADERS}
+  ${CMAKE_CURRENT_SOURCE_DIR}/cmake/prepare_stdexec.py
+  ${CMAKE_CURRENT_SOURCE_DIR}/cmake/stdexec-pool.patch
+  ${CMAKE_CURRENT_SOURCE_DIR}/cmake/stdexec-pool-base.json)
+execute_process(COMMAND ${Python3_EXECUTABLE}
+  ${CMAKE_CURRENT_SOURCE_DIR}/cmake/prepare_stdexec.py
+  ${CROWDB_STDEXEC_SOURCE} ${CROWDB_STDEXEC_OVERLAY}
+  COMMAND_ERROR_IS_FATAL ANY)
+
 # ── Library ───────────────────────────────────────────────────────
 file(GLOB_RECURSE CROWDB_TREE_SRC CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp)
 if(NOT (LIBURING_INCLUDE_DIR AND LIBURING_LIB))
@@ -55,7 +73,7 @@ endif()
 target_include_directories(crowdb-tree PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_include_directories(crowdb-tree PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_include_directories(crowdb-tree PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/crowdb-rpc-build/generated)
-target_include_directories(crowdb-tree SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../third-party/stdexec/include)
+target_include_directories(crowdb-tree SYSTEM PRIVATE ${CROWDB_STDEXEC_OVERLAY}/include)
 find_package(Threads REQUIRED)
 target_link_libraries(crowdb-tree PUBLIC Threads::Threads crowdbcommon PRIVATE crowdb-rpc)
 
@@ -109,7 +127,7 @@ add_executable(crowdb_tree_tests ${CROWDB_TREE_TEST_SRC})
 target_include_directories(crowdb_tree_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_include_directories(crowdb_tree_tests PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/crowdb-rpc-build/generated)
 target_include_directories(crowdb_tree_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../crowdb-rpc/include)
-target_include_directories(crowdb_tree_tests SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../third-party/stdexec/include)
+target_include_directories(crowdb_tree_tests SYSTEM PRIVATE ${CROWDB_STDEXEC_OVERLAY}/include)
 target_link_libraries(crowdb_tree_tests PRIVATE crowdb-tree crowdb-rpc GTest::gtest)
 # GCC 13 -Warray-bounds/-Wstringop-overflow false positives: buffer::alloc
 # returns heap memory, but GCC thinks b.data() points into the stack object b.
@@ -131,6 +149,7 @@ if(CROWDB_TREE_BENCH)
   find_package(benchmark REQUIRED)
   file(GLOB CROWDB_TREE_BENCH_SRC CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/bench/*.cpp)
   list(FILTER CROWDB_TREE_BENCH_SRC EXCLUDE REGEX "scan_step_bench\\.cpp$")
+  list(FILTER CROWDB_TREE_BENCH_SRC EXCLUDE REGEX "parallel_flush_profile\\.cpp$")
   add_executable(crowdb_tree_bench ${CROWDB_TREE_BENCH_SRC})
   target_include_directories(crowdb_tree_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(crowdb_tree_bench PRIVATE benchmark::benchmark absl::btree crowdb-tree)
@@ -149,4 +168,6 @@ if(CROWDB_TREE_BENCH)
   # dependency. Isolates the 1KiB anomaly's root cause via Crowtree::scan_profile.
   add_executable(scan_step_profile bench/scan_step_bench.cpp)
   target_link_libraries(scan_step_profile PRIVATE crowdb-tree absl::btree)
+  add_executable(parallel_flush_profile bench/parallel_flush_profile.cpp)
+  target_link_libraries(parallel_flush_profile PRIVATE crowdb-tree)
 endif()

@@ -5,14 +5,14 @@
 
 use super::super::fact;
 use crate::deployment::preparation::DefaultStorageBinding;
-use crowdb_kv_client::DiskRecord;
+use crowdb_paxos_kv_client::DiskRecord;
 use crowdb_protocol::{
     common::{HwStatus, InstanceValue},
     mgmt::cluster::{DependencyKind, DependencyObservation, DependencyState},
     sysdata::{DiskGroupEntry, DiskdbOwnerEntry, KVGroupBindEntry},
 };
 
-type Read<'a, T> = Result<&'a [T], &'a crowdb_kv_client::Error>;
+type Read<'a, T> = Result<&'a [T], &'a crowdb_paxos_kv_client::Error>;
 type Check = Result<String, (&'static str, String)>;
 
 pub(super) fn observation(id: &str, result: Check) -> DependencyObservation {

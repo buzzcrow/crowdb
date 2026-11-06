@@ -3,6 +3,9 @@
 
 //! Safe wrappers for Buffer and BufferPool.
 
+mod owned;
+pub use owned::OwnedBytesError;
+
 use crate::sys;
 use std::ptr;
 
@@ -74,6 +77,7 @@ pub enum BufferChainError {
     TooManyViews { maximum: usize, actual: usize },
     PayloadTooLarge,
     EmptyView,
+    OwnerAllocation(OwnedBytesError),
 }
 
 impl std::fmt::Display for BufferChainError {
@@ -85,6 +89,7 @@ impl std::fmt::Display for BufferChainError {
             }
             Self::PayloadTooLarge => f.write_str("buffer chain payload exceeds u32"),
             Self::EmptyView => f.write_str("buffer chain views must not be empty"),
+            Self::OwnerAllocation(error) => error.fmt(f),
         }
     }
 }
@@ -106,7 +111,7 @@ impl BufferChain {
                 if view.is_empty() {
                     Err(BufferChainError::EmptyView)
                 } else {
-                    Ok(Buffer::from_owned_bytes(view))
+                    Buffer::try_from_owned_bytes(view).map_err(BufferChainError::OwnerAllocation)
                 }
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -306,17 +311,7 @@ impl Buffer {
 
     /// Wrap immutable owned bytes without copying their allocation.
     pub fn from_owned_bytes(data: bytes::Bytes) -> Self {
-        if data.is_empty() {
-            return Buffer {
-                handle: std::ptr::null_mut(),
-            };
-        }
-        let data_ptr = data.as_ptr();
-        let len = data.len();
-        let ctx = Box::into_raw(Box::new(data)).cast::<std::ffi::c_void>();
-        let handle =
-            unsafe { sys::crowdb_rpc_buffer_create_external(data_ptr, len as u32, Some(free_bytes_cb), ctx) };
-        Buffer { handle }
+        Self::try_from_owned_bytes(data).unwrap_or_else(|_| Self::from_raw(ptr::null_mut()))
     }
 
     /// Create an external buffer wrapping a Vec allocation (zero-copy).
@@ -431,13 +426,5 @@ extern "C" fn free_vec_cb(ctx: *mut std::ffi::c_void) {
         // from_vec_offset. We reclaim it here exactly once (the C++ Buffer
         // release() calls free_cb once when refcount hits zero).
         unsafe { drop(Box::from_raw(ctx.cast::<Vec<u8>>())) };
-    }
-}
-
-extern "C" fn free_bytes_cb(ctx: *mut std::ffi::c_void) {
-    if !ctx.is_null() {
-        // SAFETY: `ctx` came from `Box::into_raw(Box::new(Bytes))` above and
-        // the C++ buffer invokes its release callback exactly once.
-        unsafe { drop(Box::from_raw(ctx.cast::<bytes::Bytes>())) };
     }
 }

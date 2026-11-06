@@ -71,7 +71,7 @@ def managed_processes(cluster):
 
 
 def terminal_writer_recovery(cluster, cluster_id):
-    origin = f"http://{cluster.addresses[0]}:9090"
+    origin = f"http://{cluster.addresses[0]}:6135"
     inputs = cluster.state()
     identities = [cluster.inspect_owned(name)["Id"] for name in cluster.servers]
     cluster.invoke("s3", "bucket", "put", "writer-recovery")
@@ -128,7 +128,7 @@ def terminal_writer_recovery(cluster, cluster_id):
     for address in cluster.addresses:
         for key in ("before", "after"):
             value = cluster.invoke("s3", "object", "get", "writer-recovery", key,
-                                   endpoint=f"http://{address}:9090")
+                                   endpoint=f"http://{address}:6135")
             assert value == f"acknowledged-{key}-fault", value
     (cluster.artifacts / "recovery-proof.json").write_text(json.dumps({
         "cluster_id": cluster_id, "old_pids": old, "new_pids": new, "restarted": restarted,

@@ -23,8 +23,8 @@ use crowdb_chunkdb::topology::{
     build_snapshot, notify::NotifyHandler, refresh::run_refresh_loop, TopologyCache,
 };
 use crowdb_common::metrics::{MetricsRegistry, MetricsRunner};
-use crowdb_kv_client::{
-    ClientConfig, CrowdbKvClient, DomainMonitorClient, HardwareClient, KVClusterMetaClient,
+use crowdb_paxos_kv_client::{
+    ClientConfig, DomainMonitorClient, HardwareClient, PaxosKvClient, PaxosKvClusterMetaClient,
     ServiceRegistryClient, WatchNotifyClient,
 };
 use tracing::{error, info, warn};
@@ -169,7 +169,7 @@ async fn main() {
     let mut kv_config = ClientConfig::new(config.server.kv_server_mgmt_seeds.clone());
     kv_config.pool_size_per_endpoint = config.server.kv_pool_size;
     kv_config.rpc_workers = config.server.kv_rpc_workers;
-    let kv = Arc::new(CrowdbKvClient::new_with_isolated_point_reads(kv_config));
+    let kv = Arc::new(PaxosKvClient::new_with_isolated_point_reads(kv_config));
     let hw = HardwareClient::from_shared(Arc::clone(&kv));
     let refresh_hw = HardwareClient::from_shared(Arc::clone(&kv));
     let watch = WatchNotifyClient::from_shared(Arc::clone(&kv));
@@ -256,7 +256,7 @@ async fn main() {
 
     // Binding cache + chunk store.
     let bindings = BindingCache::new();
-    let slot_maps = crowdb_kv_client::ChunkSlotMapClient::new(Arc::clone(&kv));
+    let slot_maps = crowdb_paxos_kv_client::ChunkSlotMapClient::new(Arc::clone(&kv));
     if let Some(bootstrap) = &config.slot_bootstrap {
         if let Err(error) = slot_maps.initialize_layout(bootstrap).await {
             error!(%error, "chunk slot initialization failed; refusing startup");
@@ -695,14 +695,14 @@ fn load_config(args: &Cli) -> ChunkdbConfig {
     config
 }
 
-async fn validate_voting_topology(kv: &Arc<CrowdbKvClient>, mode: DeploymentMode) -> Result<(), String> {
+async fn validate_voting_topology(kv: &Arc<PaxosKvClient>, mode: DeploymentMode) -> Result<(), String> {
     use std::collections::{BTreeMap, BTreeSet};
 
     if mode == DeploymentMode::TestUnsafePlacement {
         return Ok(());
     }
 
-    let metadata = KVClusterMetaClient::from_shared(Arc::clone(kv));
+    let metadata = PaxosKvClusterMetaClient::from_shared(Arc::clone(kv));
     let groups = metadata
         .list_all_groups()
         .await

@@ -18,7 +18,7 @@ test-util = []
 crowdb-console-shared = { path = "../../lib/crowdb-console-shared" }
 clap = { version = "4", features = ["derive", "env"] }
 crowdb-chunk-kv-client = { path = "../../lib/crowdb-chunk-kv-client" }
-crowdb-kv-client = { path = "../../lib/crowdb-kv-client" }
+crowdb-paxos-kv-client = { path = "../../lib/crowdb-paxos-kv-client" }
 crowdb-diskio-client = { path = "../../lib/crowdb-diskio-client" }
 crowdb-protocol = { path = "../../lib/crowdb-protocol" }
 crowdb-rpc-ffi = { path = "../../lib/crowdb-rpc/ffi" }
@@ -42,7 +42,7 @@ if-addrs = "0.13"
 
 [dev-dependencies]
 ssh-key = { version = "0.6", features = ["ed25519"] }
-crowdb-kv = { path = "../../lib/crowdb-kv" }
+crowdb-paxos-kv = { path = "../../lib/crowdb-paxos-kv" }
 crowdb-monitor = { path = ".", features = ["test-util"] }
 crowdb-rpc-ffi = { path = "../../lib/crowdb-rpc/ffi", features = ["test-util"] }
 crowdb-test-harness = { path = "../../lib/crowdb-test-harness" }

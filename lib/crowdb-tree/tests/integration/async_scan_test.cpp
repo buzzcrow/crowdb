@@ -96,10 +96,9 @@ std::map<std::string, std::string> unpack_entries(const ct_buf &buf, uint64_t co
 
 } // namespace
 
-// Fast path: every leaf already resident -- the future is done on the very
-// first poll, and the packed output matches ct_scan's own synchronous result
-// byte for byte.
-TEST(AsyncScan, FastPathAllResidentCompletesSynchronously)
+// Resident results also use the shared runtime. Completion must return every
+// packed entry without depending on which worker runs before the first poll.
+TEST(AsyncScan, ResidentScanCompletesWithAllEntries)
 {
     ct_options opt = {};
     ct_tree   *t   = nullptr;
@@ -111,13 +110,11 @@ TEST(AsyncScan, FastPathAllResidentCompletesSynchronously)
     ct_future *f = ct_scan_async(t, nullptr, 0, nullptr, 0, nullptr, 0, 0, 0, 0, 0);
     ASSERT_NE(f, nullptr);
 
-    int32_t   done      = 0;
     int32_t   truncated = 0;
     uint64_t  count     = 0;
     ct_buf    entries   = {};
-    ct_status st        = ct_future_poll(f, &done, &truncated, &count, &entries);
+    ct_status st        = poll_scan_until_done(f, &truncated, &count, &entries);
     ASSERT_EQ(st, 0);
-    EXPECT_EQ(done, 1) << "an all-resident scan must complete on the first poll";
     EXPECT_EQ(truncated, 0);
     ASSERT_EQ(count, 10U);
 
@@ -192,8 +189,14 @@ TEST(AsyncScan, MissAfterEvictionCompletesViaReactor)
     ASSERT_EQ(ct_snapshot(t, &durable), 0);
     EXPECT_EQ(durable, 40U);
 
+    ct_buf   warm_entries{};
+    uint64_t warm_count = 0;
+    ASSERT_EQ(ct_scan(t, nullptr, 0, nullptr, 0, 0, 0, nullptr, 0, 0, 0, 0, 0, 0, &warm_entries, &warm_count, nullptr),
+              0);
+    ASSERT_EQ(warm_count, 40U);
+    ct_free_buf(&warm_entries);
     uint64_t evicted = ct_evict_clean_leaves(t, 0);
-    EXPECT_GT(evicted, 0U) << "snapshot should have made every leaf clean and evictable";
+    EXPECT_GT(evicted, 0U) << "the explicitly loaded clean leaves must be evictable";
 
     ct_future *f = ct_scan_async(t, nullptr, 0, nullptr, 0, nullptr, 0, 0, 0, 0, 0);
     ASSERT_NE(f, nullptr);
@@ -241,10 +244,8 @@ TEST(AsyncScan, FutureFreeBeforeCompletionDoesNotCrashOrLeak)
     ct_close(t);
 }
 
-// Empty-tree scan_async resolves immediately with zero entries, not an
-// infinite retry loop (root_page_id_ == kInvalidPageId is handled the same
-// way scan() itself handles it -- no page to ever be "pending").
-TEST(AsyncScan, EmptyTreeResolvesImmediately)
+// An empty scan must terminate without repeatedly scheduling an empty window.
+TEST(AsyncScan, EmptyTreeResolvesWithoutRetryingForever)
 {
     ct_options opt = {};
     ct_tree   *t   = nullptr;
@@ -252,11 +253,9 @@ TEST(AsyncScan, EmptyTreeResolvesImmediately)
 
     ct_future *f = ct_scan_async(t, nullptr, 0, nullptr, 0, nullptr, 0, 0, 0, 0, 0);
     ASSERT_NE(f, nullptr);
-    int32_t   done  = 0;
     uint64_t  count = 0;
-    ct_status st    = ct_future_poll(f, &done, nullptr, &count, nullptr);
+    ct_status st    = poll_scan_until_done(f, nullptr, &count, nullptr);
     ASSERT_EQ(st, 0);
-    EXPECT_EQ(done, 1);
     EXPECT_EQ(count, 0U);
 
     ct_close(t);

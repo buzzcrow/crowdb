@@ -10,40 +10,24 @@ use crowdb_chunk_stream::{
     memory::MemoryStreamStore, ChunkStream, StreamConfig, StreamName, StreamPurpose, StreamRecord,
     StreamRecordState,
 };
-use crowdb_tree_ffi::{ChunkPageStoreOptions, ChunkRootCatalog, Config, PageStore};
-use root_catalog::TestRootCatalog;
+use crowdb_tree_ffi::chunk::test_util::TestChunkBackend;
+use crowdb_tree_ffi::Config;
+use root_catalog::TestCatalogLoad;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-fn config(tree_id: u64, catalog: &Arc<ChunkRootCatalog>) -> Config {
+fn config(backend: &TestChunkBackend) -> Config {
     Config {
-        page_store: Some(Arc::new(
-            PageStore::open_chunk(
-                ChunkPageStoreOptions {
-                    tree_id,
-                    owner_epoch: 1,
-                    open_generation: 0,
-                    pack_bytes: 4096,
-                    iu_size: 1,
-                    max_concurrent_packs: 2,
-                    materialization_bytes_per_pass: 4096,
-                    max_chunk_bytes: 1024 * 1024,
-                    mirror_copies: 0,
-                },
-                catalog.clone(),
-                None,
-            )
-            .unwrap(),
-        )),
-        ..Config::default()
+        page_store: Some(backend.page_store(0).unwrap()),
+        ..backend.config()
     }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn range_rebuild_keeps_the_runtime_available_during_catalog_io() {
-    let backend = Arc::new(TestRootCatalog::default());
-    let catalog = Arc::new(ChunkRootCatalog::open_callback(backend.clone()).unwrap());
-    let source = CrowdbPartitionTree::open(91, &config(91, &catalog)).unwrap();
+    let observed = Arc::new(TestCatalogLoad::default());
+    let source_backend = TestChunkBackend::new(91, 1).unwrap();
+    let source = CrowdbPartitionTree::open(91, &config(&source_backend)).unwrap();
     source
         .apply(
             1,
@@ -55,13 +39,18 @@ async fn range_rebuild_keeps_the_runtime_available_during_catalog_io() {
         .await
         .unwrap();
     source.checkpoint(0).await.unwrap();
-    let child_config = config(92, &catalog);
-    let progress = backend.clone();
+    let mut child_backend = TestChunkBackend::new(92, 1).unwrap();
+    let hook = observed.clone();
+    child_backend
+        .on_root_load_for_tests(move || hook.wait_for_async_progress())
+        .unwrap();
+    let child_config = config(&child_backend);
+    let progress = observed.clone();
     let heartbeat = tokio::spawn(async move {
         progress.entered.notified().await;
         progress.async_progress.store(true, Ordering::Release);
     });
-    backend.armed.store(true, Ordering::Release);
+    observed.armed.store(true, Ordering::Release);
     let (child, _) = tokio::spawn(async move {
         source
             .rebuild_range(92, &PartitionRange::default(), child_config)
@@ -72,7 +61,7 @@ async fn range_rebuild_keeps_the_runtime_available_during_catalog_io() {
     .unwrap();
     heartbeat.await.unwrap();
     assert!(
-        backend.observed_progress.load(Ordering::Acquire),
+        observed.observed_progress.load(Ordering::Acquire),
         "catalog IO blocked the only async worker"
     );
     assert_eq!(child.get(b"key").await.unwrap().unwrap().value, b"value");
@@ -80,9 +69,13 @@ async fn range_rebuild_keeps_the_runtime_available_during_catalog_io() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn native_recovery_keeps_the_runtime_available_during_catalog_io() {
-    let backend = Arc::new(TestRootCatalog::default());
-    let catalog = Arc::new(ChunkRootCatalog::open_callback(backend.clone()).unwrap());
-    let config = config(93, &catalog);
+    let observed = Arc::new(TestCatalogLoad::default());
+    let mut backend = TestChunkBackend::new(93, 1).unwrap();
+    let hook = observed.clone();
+    backend
+        .on_root_load_for_tests(move || hook.wait_for_async_progress())
+        .unwrap();
+    let config = config(&backend);
     let pages = config.page_store.clone().unwrap();
     let store = Arc::new(MemoryStreamStore::new(4096));
     let stream = ChunkStream::create(
@@ -104,12 +97,12 @@ async fn native_recovery_keeps_the_runtime_available_during_catalog_io() {
     )
     .await
     .unwrap();
-    let progress = backend.clone();
+    let progress = observed.clone();
     let heartbeat = tokio::spawn(async move {
         progress.entered.notified().await;
         progress.async_progress.store(true, Ordering::Release);
     });
-    backend.armed.store(true, Ordering::Release);
+    observed.armed.store(true, Ordering::Release);
     let recovered = tokio::spawn(async move {
         Partition::recover_native_latest_prepared_assignment(
             PartitionId { high: 1, low: 93 },
@@ -128,8 +121,9 @@ async fn native_recovery_keeps_the_runtime_available_during_catalog_io() {
     .unwrap();
     heartbeat.await.unwrap();
     assert!(
-        backend.observed_progress.load(Ordering::Acquire),
+        observed.observed_progress.load(Ordering::Acquire),
         "native recovery blocked the only async worker"
     );
     assert_eq!(recovered.snapshot().applied_seq, 0);
+    recovered.close().await.unwrap();
 }

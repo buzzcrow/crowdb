@@ -226,7 +226,7 @@ async fn distinct_part_numbers_share_no_upload_cas_or_counter() {
 async fn modern_complete_reads_selected_generations_without_current_pointer_reloads() {
     use super::retrieval_storage::TestReadStorage;
     use crowdb_access_s3::{execution::S3Executor, storage::S3StorageClients};
-    use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
+    use crowdb_paxos_kv_client::{ClientConfig, PaxosKvClient};
 
     let mut session = modern_session();
     session.expires_ms = u64::MAX;
@@ -238,7 +238,7 @@ async fn modern_complete_reads_selected_generations_without_current_pointer_relo
     let chunks = Arc::new(TestReadStorage { queries: 0.into() });
     let executor = S3Executor::new(
         S3StorageClients {
-            control: Arc::new(CrowdbKvClient::new(ClientConfig::new(Vec::new()))),
+            control: Arc::new(PaxosKvClient::new(ClientConfig::new(Vec::new()))),
             metadata: test.store.clone(),
             chunks: Arc::new(chunks.client()),
         },

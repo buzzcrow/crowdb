@@ -29,7 +29,7 @@ class DeploymentBrowserCluster(ManagedCluster):
                    CROWDB_PREVIEW_TEST_ARTIFACTS=str(self.artifacts / "browser"))
         with Control(self):
             self.invoke(["pixi", "run", "node", "release-web.cjs",
-                         f"http://{self.address}:9090", "owned-monitor"], project, env, "browser")
+                         f"http://{self.address}:6135", "owned-monitor"], project, env, "browser")
 
     def invoke(self, arguments, project, env, phase):
         started = time.monotonic()
@@ -55,7 +55,7 @@ class DeploymentBrowserCluster(ManagedCluster):
         if type(body.get("pid")) is not int or body["pid"] != pid or pid <= 1:
             raise ValueError("browser service PID changed")
         executable = self.command("exec", self.servers[0], "cat", f"/proc/{pid}/cmdline").split("\0")[0]
-        if Path(executable).name != "crowdb-kv-server":
+        if Path(executable).name != "crowdb-paxos-kv-server":
             raise ValueError("browser service executable changed")
         self.command("exec", self.servers[0], "kill", "-" + body["signal"], str(pid))
         return {"pid": pid}

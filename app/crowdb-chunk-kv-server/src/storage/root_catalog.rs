@@ -7,22 +7,35 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use bytes::Bytes;
-use crowdb_kv_client::{BatchOp, CrowdbKvClient, GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{BatchOp, GetOutcome, PaxosKvClient, ReadMode};
+use crowdb_tree_ffi::chunk::stage::{StageId, StageRecord};
 use crowdb_tree_ffi::{RootCatalogObject, RootCatalogStore};
+
+mod legacy_migration;
+mod legacy_tracking;
+mod prepared;
+mod protection;
+mod retention;
+mod staging;
+mod transaction;
 
 use super::StorageRuntimeError;
 use crate::{ChunkKvRangeCatalogPublisher, Group0ControlStore};
 use crowdb_protocol::chunk_kv::{ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogPartitionState};
 
 pub(super) struct KvRootCatalogStore {
-    kv: Arc<CrowdbKvClient>,
+    kv: Arc<PaxosKvClient>,
     runtime: tokio::runtime::Handle,
     store_id: u64,
     group_id: u64,
     tree_id: u64,
     owner_epoch: u64,
+    process: Option<Arc<crowdb_paxos_kv_client::StreamProcessAuthority>>,
+    writer_incarnation: u64,
+    writer_quiesced: AtomicBool,
+    recovered: ArcSwapOption<protection::RecoveryReceipt>,
     publication_authorized: AtomicBool,
     prepared_assignment: Option<ChunkKvRangeCatalogEntry>,
     published_objects: ArcSwap<HashMap<Vec<u8>, Vec<u8>>>,
@@ -30,7 +43,7 @@ pub(super) struct KvRootCatalogStore {
 
 impl KvRootCatalogStore {
     pub(super) async fn claim(
-        kv: Arc<CrowdbKvClient>,
+        kv: Arc<PaxosKvClient>,
         store_id: u64,
         group_id: u64,
         tree_id: u64,
@@ -74,7 +87,9 @@ impl KvRootCatalogStore {
                 .await
             {
                 Ok(_) => break,
-                Err(crowdb_kv_client::Error::CasFailed { .. } | crowdb_kv_client::Error::CasBusy) => {}
+                Err(
+                    crowdb_paxos_kv_client::Error::CasFailed { .. } | crowdb_paxos_kv_client::Error::CasBusy,
+                ) => {}
                 Err(error) => return Err(StorageRuntimeError::Tree(error.to_string())),
             }
         }
@@ -85,6 +100,10 @@ impl KvRootCatalogStore {
             group_id,
             tree_id,
             owner_epoch,
+            process: None,
+            writer_incarnation: 0,
+            writer_quiesced: AtomicBool::new(false),
+            recovered: ArcSwapOption::empty(),
             publication_authorized: AtomicBool::new(true),
             prepared_assignment: None,
             published_objects: ArcSwap::from_pointee(HashMap::new()),
@@ -92,7 +111,7 @@ impl KvRootCatalogStore {
     }
 
     pub(super) async fn for_assignment(
-        kv: Arc<CrowdbKvClient>,
+        kv: Arc<PaxosKvClient>,
         store_id: u64,
         group_id: u64,
         entry: &ChunkKvRangeCatalogEntry,
@@ -112,7 +131,7 @@ impl KvRootCatalogStore {
     }
 
     pub(super) fn prepare(
-        kv: Arc<CrowdbKvClient>,
+        kv: Arc<PaxosKvClient>,
         store_id: u64,
         group_id: u64,
         entry: &ChunkKvRangeCatalogEntry,
@@ -127,6 +146,10 @@ impl KvRootCatalogStore {
             group_id,
             tree_id: entry.artifact.tree_id,
             owner_epoch: entry.owner_epoch,
+            process: None,
+            writer_incarnation: 0,
+            writer_quiesced: AtomicBool::new(false),
+            recovered: ArcSwapOption::empty(),
             publication_authorized: AtomicBool::new(false),
             prepared_assignment: Some(entry.clone()),
             published_objects: ArcSwap::from_pointee(HashMap::new()),
@@ -136,7 +159,9 @@ impl KvRootCatalogStore {
     async fn authorize_publication(&self) -> Result<(), crowdb_tree_ffi::CtError> {
         self.claim_published(false)
             .await
-            .map_err(|_| crowdb_tree_ffi::CtError::Unavailable)
+            .map_err(|_| crowdb_tree_ffi::CtError::Unavailable)?;
+        self.register_writer().await?;
+        self.persist_completed_recovery().await
     }
 
     pub(super) async fn claim_published(&self, allow_catching_up: bool) -> Result<(), StorageRuntimeError> {
@@ -194,10 +219,14 @@ impl KvRootCatalogStore {
         }
     }
 
-    async fn get(&self, key: &[u8]) -> Result<Option<(Bytes, u64)>, crowdb_kv_client::Error> {
+    async fn get(&self, key: &[u8]) -> Result<Option<(Bytes, u64)>, crowdb_paxos_kv_client::Error> {
         self.kv
             .get(self.store_id, self.group_id, key, ReadMode::Linearizable, None)
             .await
+            .map_err(|error| {
+                tracing::warn!(tree_id = self.tree_id, error = %error, "tree root catalog read failed");
+                error
+            })
             .map(|outcome| match outcome {
                 GetOutcome::Found { value, revision } => Some((value, revision)),
                 GetOutcome::NotFound => None,
@@ -214,17 +243,62 @@ impl KvRootCatalogStore {
 }
 
 impl RootCatalogStore for KvRootCatalogStore {
+    fn prepare_legacy_migration(
+        &self,
+        tree: u64,
+        generation: u64,
+        manifest: &[u8],
+    ) -> Result<(), crowdb_tree_ffi::CtError> {
+        self.retain_legacy_migration(tree, generation, manifest)
+    }
+    fn load_legacy_migration(
+        &self,
+        tree: u64,
+        generation: u64,
+    ) -> Result<Option<Vec<u8>>, crowdb_tree_ffi::CtError> {
+        self.load_migration_receipt(tree, generation)
+    }
+    fn stage_protection(&self) -> Option<&dyn crowdb_tree_ffi::chunk::protection::StageProtectionCatalog> {
+        Some(self)
+    }
+    fn supports_staging(&self) -> bool {
+        true
+    }
+    fn load_stage(&self, tree_id: u64, id: StageId) -> Result<Option<StageRecord>, crowdb_tree_ffi::CtError> {
+        self.stage_load(tree_id, id)
+    }
+    fn compare_stage(
+        &self,
+        tree_id: u64,
+        owner_epoch: u64,
+        expected: Option<&StageRecord>,
+        next: Option<&StageRecord>,
+    ) -> Result<(), crowdb_tree_ffi::CtError> {
+        self.stage_compare(tree_id, owner_epoch, expected, next)
+    }
+    fn list_stages(
+        &self,
+        tree_id: u64,
+        after: Option<StageId>,
+        limit: u32,
+    ) -> Result<Vec<StageRecord>, crowdb_tree_ffi::CtError> {
+        self.stage_list(tree_id, after, limit)
+    }
     fn load(
         &self,
         tree_id: u64,
         object: RootCatalogObject,
     ) -> Result<Option<Vec<u8>>, crowdb_tree_ffi::CtError> {
-        if tree_id != self.tree_id {
+        if tree_id != self.tree_id && !matches!(object, RootCatalogObject::ReferenceSegment(_)) {
             return Err(crowdb_tree_ffi::CtError::InvalidArgument);
         }
         let key = object_key(tree_id, object);
-        if let Some(value) = self.published_objects.load().get(&key) {
-            return Ok(Some(value.clone()));
+        // Exact generations can be reclaimed by another catalog instance.
+        // A cached descriptor must not resurrect an absent durable root.
+        if matches!(object, RootCatalogObject::ReferenceSegment(_)) {
+            if let Some(value) = self.published_objects.load().get(&key) {
+                return Ok(Some(value.clone()));
+            }
         }
         let value = self
             .wait(self.get(&key))
@@ -240,6 +314,11 @@ impl RootCatalogStore for KvRootCatalogStore {
                 if generation != 0 {
                     return Err(crowdb_tree_ffi::CtError::Corruption);
                 }
+            }
+        }
+        if let Some((bytes, _)) = &value {
+            if !matches!(object, RootCatalogObject::ReferenceSegment(_)) {
+                self.wait(self.track_legacy_reader(bytes))?;
             }
         }
         Ok(value.map(|(bytes, _)| bytes.to_vec()))
@@ -282,10 +361,11 @@ impl RootCatalogStore for KvRootCatalogStore {
         else {
             return Err(crowdb_tree_ffi::CtError::Unavailable);
         };
+        self.wait(self.check_registered_writer())?;
         if decode_authority(&authority) != Some((owner_epoch, expected_generation)) {
             return Err(crowdb_tree_ffi::CtError::Unavailable);
         }
-        let ops = [
+        let mut ops = vec![
             BatchOp::Put {
                 key: Bytes::from(authority_key.clone()),
                 value: Bytes::copy_from_slice(&encode_authority(owner_epoch, generation)),
@@ -299,6 +379,7 @@ impl RootCatalogStore for KvRootCatalogStore {
                 value: Bytes::copy_from_slice(manifest),
             },
         ];
+        ops.extend(self.wait(self.legacy_publication_ops(generation, manifest))?);
         self.wait(
             self.kv
                 .batch_write_cas(self.store_id, self.group_id, &ops, &authority_key, revision),
@@ -337,7 +418,9 @@ impl RootCatalogStore for KvRootCatalogStore {
                 revision,
             )) {
                 Ok(_) => return Ok(current),
-                Err(crowdb_kv_client::Error::CasFailed { .. } | crowdb_kv_client::Error::CasBusy) => {}
+                Err(
+                    crowdb_paxos_kv_client::Error::CasFailed { .. } | crowdb_paxos_kv_client::Error::CasBusy,
+                ) => {}
                 Err(_) => return Err(crowdb_tree_ffi::CtError::Unavailable),
             }
         }
@@ -358,67 +441,8 @@ impl RootCatalogStore for KvRootCatalogStore {
     }
 
     fn reclaim_before(&self, tree_id: u64, generation: u64) -> u64 {
-        if tree_id != self.tree_id || generation <= 2 {
-            return 0;
-        }
-        let pin_prefix = catalog_pin_prefix(tree_id);
-        let pinned_generation = match self.wait(self.kv.scan(
-            self.store_id,
-            self.group_id,
-            &pin_prefix,
-            &[],
-            &[],
-            0,
-            ReadMode::Linearizable,
-            None,
-            false,
-            None,
-        )) {
-            Ok(outcome) => {
-                let mut oldest = None;
-                for (_, value) in outcome.items {
-                    let Some(pin) = decode_u64(&value) else {
-                        return 0;
-                    };
-                    oldest = Some(oldest.map_or(pin, |current: u64| current.min(pin)));
-                }
-                oldest
-            }
-            Err(_) => return 0,
-        };
-        let generation = pinned_generation.map_or(generation, |pin| generation.min(pin));
-        if generation <= 2 {
-            return 0;
-        }
-        let floor_key = catalog_key(tree_id, b"reclaim-floor", 0);
-        let (floor, revision) = match self.wait(self.get(&floor_key)) {
-            Ok(Some((value, revision))) => match decode_u64(&value) {
-                Some(floor) => (floor, revision),
-                None => return 0,
-            },
-            Ok(None) => (1, 0),
-            Err(_) => return 0,
-        };
-        let end = generation.saturating_sub(1).min(floor.saturating_add(128));
-        if floor >= end {
-            return 0;
-        }
-        let mut ops = (floor..end)
-            .map(|old_generation| BatchOp::Delete {
-                key: Bytes::from(catalog_key(tree_id, b"manifest", old_generation)),
-            })
-            .collect::<Vec<_>>();
-        ops.push(BatchOp::Put {
-            key: Bytes::from(floor_key.clone()),
-            value: Bytes::copy_from_slice(&end.to_be_bytes()),
-        });
-        self.wait(
-            self.kv
-                .batch_write_cas(self.store_id, self.group_id, &ops, &floor_key, revision),
-        )
-        .map_or(0, |_| end - floor)
+        self.reclaim_generations(tree_id, generation)
     }
-
     fn pin_generation(
         &self,
         tree_id: u64,
@@ -426,53 +450,15 @@ impl RootCatalogStore for KvRootCatalogStore {
         transition_low: u64,
         generation: u64,
     ) -> Result<(), crowdb_tree_ffi::CtError> {
-        if tree_id != self.tree_id || (transition_high == 0 && transition_low == 0) || generation == 0 {
-            return Err(crowdb_tree_ffi::CtError::InvalidArgument);
-        }
-        if self
-            .wait(self.get(&catalog_key(tree_id, b"manifest", generation)))
-            .map_err(|_| crowdb_tree_ffi::CtError::Unavailable)?
-            .is_none()
-        {
-            return Err(crowdb_tree_ffi::CtError::NotFound);
-        }
-        let key = catalog_pin_key(tree_id, transition_high, transition_low);
-        for _ in 0..3 {
-            if let Some((value, _)) = self
-                .wait(self.get(&key))
-                .map_err(|_| crowdb_tree_ffi::CtError::Unavailable)?
-            {
-                return if decode_u64(&value) == Some(generation) {
-                    Ok(())
-                } else {
-                    Err(crowdb_tree_ffi::CtError::InvalidArgument)
-                };
-            }
-            match self.wait(
-                self.kv
-                    .put_cas(self.store_id, self.group_id, &key, &generation.to_be_bytes(), 0),
-            ) {
-                Ok(_) => return Ok(()),
-                Err(crowdb_kv_client::Error::CasFailed { .. } | crowdb_kv_client::Error::CasBusy) => {}
-                Err(_) => return Err(crowdb_tree_ffi::CtError::Unavailable),
-            }
-        }
-        Err(crowdb_tree_ffi::CtError::Unavailable)
+        self.retain_generation(tree_id, transition_high, transition_low, generation)
     }
-
     fn unpin_generation(
         &self,
         tree_id: u64,
         transition_high: u64,
         transition_low: u64,
     ) -> Result<(), crowdb_tree_ffi::CtError> {
-        if tree_id != self.tree_id || (transition_high == 0 && transition_low == 0) {
-            return Err(crowdb_tree_ffi::CtError::InvalidArgument);
-        }
-        let key = catalog_pin_key(tree_id, transition_high, transition_low);
-        self.wait(self.kv.delete(self.store_id, self.group_id, &key, None))
-            .map(|_| ())
-            .map_err(|_| crowdb_tree_ffi::CtError::Unavailable)
+        self.release_generation(tree_id, transition_high, transition_low)
     }
 }
 

@@ -42,7 +42,7 @@ pub enum Error {
     NotImplemented(String),
 
     #[error("kv client error: {0}")]
-    KvClient(#[from] crowdb_kv_client::Error),
+    KvClient(#[from] crowdb_paxos_kv_client::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

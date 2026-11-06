@@ -9,7 +9,7 @@ use crowdb_diskdb_client::{DiskdbClient, DiskdbRpcTransport};
 use crowdb_diskio_client::{
     DiskId as IoDiskId, DiskioClient, DiskioClientConfig, Durability, OperationOptions, SegmentTarget,
 };
-use crowdb_kv_client::{GetOutcome, HardwareClient, ReadMode, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{GetOutcome, HardwareClient, ReadMode, ServiceRegistryClient};
 use crowdb_protocol::{
     diskdb::rpc::{AllocateBlocksRequest, CommitBlocksRequest, Segment},
     key::{BinaryKey, BusyBlockKey, DiskKey},
@@ -210,11 +210,7 @@ async fn write_committed(
 ) -> (DiskioClient, SegmentTarget) {
     let io = DiskioClient::connect_disk(
         DiskioClientConfig {
-            management_seeds: context
-                .addresses
-                .iter()
-                .map(|address| format!("http://{address}:10000"))
-                .collect(),
+            management_seeds: context.management_seeds.clone(),
             normal_connections_per_endpoint: 1,
             priority_connections_per_endpoint: 1,
             rpc_workers: 1,

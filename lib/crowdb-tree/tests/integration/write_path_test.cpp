@@ -34,7 +34,7 @@ std::string get_or(Crowdbtree &t, const std::string &k, const std::string &dflt)
 
 } // namespace
 
-TEST(WritePath, BasePagesLiveInBufferPool)
+TEST(WritePath, LogicalPagesRetainPaidOwnersWithoutEncodingFrames)
 {
     Config opt;
     opt.max_delta_len     = 1;    // consolidate into base frames quickly
@@ -47,13 +47,15 @@ TEST(WritePath, BasePagesLiveInBufferPool)
         ASSERT_TRUE(t.apply(s, put_one(key(i), "payload-" + std::to_string(i))).ok());
         ASSERT_TRUE(t.flush().ok());
     }
-    // The tree split into multiple leaves under one or more inner pages; every
-    // such base page is built into a pool frame (held resident by its page).
+    // Flush splits logical pages without encoding frames. Independent paid
+    // overlay owners supply values until writeback creates reloadable bases.
     ASSERT_GT(t.leaf_count(), 1U);
-    ASSERT_NE(t.buffer_pool(), nullptr);
-    auto s = t.buffer_pool()->stats();
-    EXPECT_GE(s.used, t.leaf_count()); // at least one frame per live leaf
-    // Values remain correct when read straight out of the frames.
+    ASSERT_GT(t.leaf_count_atomic(), 0U);
+    const auto stats = t.tree_state_stats();
+    // These short values are inline in the charged CellVersion metadata.
+    EXPECT_GT(stats.resources.metadata_bytes, 0U);
+    EXPECT_GT(stats.resources.allocated_bytes, 0U);
+    EXPECT_EQ(t.stats().buffer_pool_used, 0U);
     for (int i = 0; i < 60; ++i) {
         EXPECT_EQ(get_or(t, key(i), "?"), "payload-" + std::to_string(i));
     }
@@ -92,7 +94,7 @@ TEST(WritePath, WriteStormToBoundedKeySetKeepsDirtyMemoryBounded)
     // threshold crossing, not the unbounded-growth-with-write-count this
     // test is checking for).
     auto fixed_value = [](int round) {
-        std::array<char, 8> b{};
+        std::array<char, 16> b{};
         snprintf(b.data(), b.size(), "v%06d", round);
         return std::string(b.data());
     };
@@ -102,7 +104,7 @@ TEST(WritePath, WriteStormToBoundedKeySetKeepsDirtyMemoryBounded)
         ASSERT_TRUE(t.apply(i + 1, put_one(key(i), fixed_value(0))).ok());
     }
     ASSERT_TRUE(t.flush().ok());
-    uint32_t dirty_after_initial_fill = t.buffer_pool()->stats().dirty;
+    uint32_t dirty_after_initial_fill = t.stats().buffer_pool_dirty;
     ASSERT_GT(dirty_after_initial_fill, 0U); // never snapshotted -- still all dirty
     ASSERT_EQ(t.leaf_count(), 1U);           // sanity: this test wants exactly one leaf throughout
 
@@ -120,7 +122,7 @@ TEST(WritePath, WriteStormToBoundedKeySetKeepsDirtyMemoryBounded)
 
     // Dirty frame count must not have grown with the number of writes --
     // only with the number of *distinct* keys, which didn't change.
-    EXPECT_EQ(t.buffer_pool()->stats().dirty, dirty_after_initial_fill);
+    EXPECT_EQ(t.stats().buffer_pool_dirty, dirty_after_initial_fill);
 
     for (int i = 0; i < kKeys; ++i) {
         EXPECT_EQ(get_or(t, key(i), "?"), fixed_value(500));
@@ -179,7 +181,7 @@ TEST(WritePath, FlushOnlyContiguousPrefix)
     t.force_advance_slot(2);
     ASSERT_TRUE(t.flush().ok());
     EXPECT_EQ(t.last_applied_slot(), 2U);
-    EXPECT_EQ(t.memtable_count(), 1U); // b@5 retained in L0
+    EXPECT_EQ(t.memtable_count(), 2U); // retained gap source and fresh writable successor
     // Both still readable (a from L1, b from L0).
     EXPECT_EQ(get_or(t, "a", "?"), "A2");
     EXPECT_EQ(get_or(t, "b", "?"), "B5");

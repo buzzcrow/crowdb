@@ -8,6 +8,7 @@ use std::time::Instant;
 use super::registry::MetricsRegistry;
 use super::system::{flush_system, SystemCollector};
 use super::timestamp::iso8601_now;
+use super::MetricsSampler;
 
 /// Lifecycle manager for the metrics registry. Owns the registry,
 /// the metrics log file writer, and the tokio interval task.
@@ -17,7 +18,9 @@ use super::timestamp::iso8601_now;
 pub struct MetricsRunner {
     registry: Arc<Mutex<MetricsRegistry>>,
     writer: Arc<Mutex<crate::logging::RotatingLogWriter>>,
-    task: Option<tokio::task::JoinHandle<()>>,
+    task: Option<tokio::task::JoinHandle<Option<Box<dyn MetricsSampler>>>>,
+    sampler: Option<Box<dyn MetricsSampler>>,
+    stop: Option<tokio::sync::oneshot::Sender<()>>,
     interval_secs: f64,
     system_collector: Arc<std::sync::Mutex<SystemCollector>>,
     collector: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -37,6 +40,8 @@ impl MetricsRunner {
             registry: Arc::new(Mutex::new(MetricsRegistry::new())),
             writer: Arc::new(Mutex::new(file)),
             task: None,
+            sampler: None,
+            stop: None,
             #[allow(clippy::cast_precision_loss)]
             interval_secs: interval_secs as f64,
             system_collector: Arc::new(std::sync::Mutex::new(SystemCollector::new())),
@@ -80,6 +85,15 @@ impl MetricsRunner {
         self.cpp_flush = Some(Arc::new(f));
     }
 
+    /// Install a sampler before `start`. It owns its windows on the metrics
+    /// task and runs every 100 ms independently of the log flush interval.
+    /// # Panics
+    /// Panics if this runner is already running.
+    pub fn set_sampler(&mut self, sampler: impl MetricsSampler + 'static) {
+        assert!(self.task.is_none(), "install the sampler before starting metrics");
+        self.sampler = Some(Box::new(sampler));
+    }
+
     /// Set a negotiate callback to query C++ for its preferred column
     /// widths. Called before each flush. Returns (`count_w`, `tps_w`).
     pub fn set_cpp_negotiate(&mut self, f: impl Fn() -> (usize, usize) + Send + Sync + 'static) {
@@ -89,6 +103,8 @@ impl MetricsRunner {
     /// Start the periodic flush task. The first tick fires immediately
     /// and is skipped (no data yet); subsequent ticks flush with the
     /// real elapsed time since the previous flush as the window.
+    /// # Panics
+    /// Panics if this runner is already running or the log interval is zero.
     pub fn start(&mut self) {
         let registry = Arc::clone(&self.registry);
         let writer = Arc::clone(&self.writer);
@@ -99,7 +115,13 @@ impl MetricsRunner {
         let cpp_negotiate = self.cpp_negotiate.clone();
         let last_flush = Arc::clone(&self.last_flush);
 
+        assert!(self.task.is_none(), "metrics runner already started");
+        let mut sampler = self.sampler.take();
+        let (stop, mut stopped) = tokio::sync::oneshot::channel();
+        self.stop = Some(stop);
         self.task = Some(tokio::spawn(async move {
+            let mut sample_ticks = tokio::time::interval(std::time::Duration::from_millis(100));
+            sample_ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut ticker = tokio::time::interval(std::time::Duration::from_secs_f64(interval));
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             ticker.tick().await;
@@ -107,7 +129,14 @@ impl MetricsRunner {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Instant::now());
             loop {
-                ticker.tick().await;
+                tokio::select! {
+                    _ = &mut stopped => break,
+                    _ = sample_ticks.tick(), if sampler.is_some() => {
+                        if let Some(sampler) = &mut sampler { sampler.sample(); }
+                        continue;
+                    }
+                    _ = ticker.tick() => {}
+                }
                 let now = Instant::now();
                 let window_secs = last_flush
                     .lock()
@@ -135,6 +164,9 @@ impl MetricsRunner {
                             let snap = sc.collect();
                             flush_system(&mut *w, &snap);
                         }
+                        if let Some(sampler) = &mut sampler {
+                            let _ = sampler.flush(&mut *w, &ts);
+                        }
                         if let Some(ref cpp) = cpp_flush {
                             cpp(&mut *w, window_secs, &ts, rust_max, count_w, tps_w);
                             let _ = w.flush();
@@ -142,15 +174,18 @@ impl MetricsRunner {
                     }
                 }
             }
+            sampler
         }));
     }
 
     /// Stop the flush task and perform a final flush with the real
     /// elapsed time since the last periodic flush.
     pub async fn stop(&mut self) {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
         if let Some(task) = self.task.take() {
-            task.abort();
-            let _ = task.await;
+            self.sampler = task.await.ok().flatten();
         }
         if let Some(ref col) = self.collector {
             col();
@@ -175,6 +210,9 @@ impl MetricsRunner {
                 if let Ok(mut sc) = self.system_collector.lock() {
                     let snap = sc.collect();
                     flush_system(&mut *w, &snap);
+                }
+                if let Some(sampler) = &mut self.sampler {
+                    let _ = sampler.flush(&mut *w, &ts);
                 }
                 if let Some(ref cpp) = self.cpp_flush {
                     cpp(&mut *w, window_secs, &ts, rust_max, count_w, tps_w);

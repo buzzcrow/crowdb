@@ -48,6 +48,9 @@ pub(super) async fn open_latest(
     stream: ChunkStream,
 ) -> Result<(Arc<dyn PartitionTree>, Arc<dyn PartitionJournal>, Checkpoint)> {
     tokio::task::spawn_blocking(move || {
+        let stream_name = stream.stream_name();
+        let stream_generation = stream.record_generation();
+        let (tree, journal) = native_storage_parts(tree_id, &range, tree_config, page_store.clone(), stream)?;
         let replay_offset = if page_store.is_chunk_backed() && tree::chunk_root_generation(&page_store)? == 0
         {
             0
@@ -57,9 +60,6 @@ pub(super) async fn open_latest(
                 _ => ChunkKvError::TreeUnavailable(error.to_string()),
             })?
         };
-        let stream_name = stream.stream_name();
-        let stream_generation = stream.record_generation();
-        let (tree, journal) = native_storage_parts(tree_id, &range, tree_config, page_store, stream)?;
         let (tree_manifest, applied_seq) = tree.checkpoint_state()?;
         let root_manifest_generation = tree.root_manifest_generation()?;
         Ok((

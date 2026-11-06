@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use crate::common::management::{client, request};
+use crowdb_protocol::port::ports::PAXOS_KV_SERVER_MGMT_BASE;
 use reqwest::Method;
 use serde_json::{json, Value};
 
@@ -21,7 +22,10 @@ async fn monitor_creates_real_kv_groups_then_validates_after_restart() {
         let initial: Value = serde_json::from_slice(&std::fs::read(witness).unwrap()).unwrap();
         assert_eq!(accepted, initial, "restart must preserve accepted initialization");
     }
-    let origin = format!("http://{}:10000", crate::common::management::addresses(1)[0]);
+    let origin = format!(
+        "http://{}:{PAXOS_KV_SERVER_MGMT_BASE}",
+        crate::common::management::addresses(1)[0]
+    );
     let http = client();
     let result = request(
         &http,
@@ -76,10 +80,13 @@ async fn monitor_creates_real_kv_groups_then_validates_after_restart() {
 }
 
 pub(super) async fn create_witness_group() {
-    use crowdb_kv_client::{ClientConfig, CrowdbKvClient, GetOutcome, ReadMode};
+    use crowdb_paxos_kv_client::{ClientConfig, GetOutcome, PaxosKvClient, ReadMode};
 
-    let origin = format!("http://{}:10000", crate::common::management::addresses(1)[0]);
-    let kv = CrowdbKvClient::new(ClientConfig::new(vec![origin.clone()]));
+    let origin = format!(
+        "http://{}:{PAXOS_KV_SERVER_MGMT_BASE}",
+        crate::common::management::addresses(1)[0]
+    );
+    let kv = PaxosKvClient::new(ClientConfig::new(vec![origin.clone()]));
     assert!(matches!(
         kv.get(
             0,
@@ -119,7 +126,10 @@ pub(super) async fn create_witness_group() {
 async fn wait_for_witness_group() {
     use std::time::{Duration, Instant};
 
-    let origin = format!("http://{}:10000", crate::common::management::addresses(1)[0]);
+    let origin = format!(
+        "http://{}:{PAXOS_KV_SERVER_MGMT_BASE}",
+        crate::common::management::addresses(1)[0]
+    );
     let http = client();
     let deadline = Instant::now() + Duration::from_secs(4);
     loop {

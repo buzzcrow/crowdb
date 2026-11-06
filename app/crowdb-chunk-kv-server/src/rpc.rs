@@ -26,6 +26,7 @@ use tokio::runtime::Handle;
 use crate::ChunkKvService;
 
 mod response;
+mod tasks;
 mod transport;
 
 use response::{submit_group_response, submit_response};
@@ -33,12 +34,42 @@ use response::{submit_group_response, submit_response};
 pub struct ChunkKvRpcService {
     service: Arc<ChunkKvService>,
     runtime: Handle,
+    tasks: Arc<tasks::RpcTasks>,
 }
 
 impl ChunkKvRpcService {
     #[must_use]
     pub fn new(service: Arc<ChunkKvService>, runtime: Handle) -> Self {
-        Self { service, runtime }
+        Self {
+            service,
+            runtime,
+            tasks: Arc::new(tasks::RpcTasks::default()),
+        }
+    }
+
+    /// Stop asynchronous handler admission and wait until their request,
+    /// partition and response owners have all been dropped.
+    pub async fn close_and_drain(&self) {
+        self.tasks.close_and_drain().await;
+    }
+
+    fn spawn_owned<F>(&self, permit: tasks::RpcTask, future: F)
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        self.runtime.spawn(async move {
+            {
+                let mut future = std::pin::pin!(future);
+                future.as_mut().await;
+            }
+            drop(permit);
+        });
+    }
+
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn hold_request_for_tests(&self) -> Option<impl Send + 'static> {
+        self.tasks.enter()
     }
 
     pub fn register_handlers(self: &Arc<Self>, server: &Arc<RpcServer>) {
@@ -75,9 +106,13 @@ impl ChunkKvRpcService {
     }
 
     fn handle_point(&self, request: ServerRequest, server: &Arc<RpcServer>) {
+        let Some(permit) = self.tasks.enter() else {
+            request.close_connection();
+            return;
+        };
         let service = Arc::clone(&self.service);
         let server = Arc::clone(server);
-        self.runtime.spawn(async move {
+        self.spawn_owned(permit, async move {
             let rpc_request_id = request.request_id;
             let response = match decode_point_request(request.control()) {
                 Ok(envelope) if envelope.rpc_request_id == rpc_request_id => {
@@ -93,9 +128,13 @@ impl ChunkKvRpcService {
     }
 
     fn handle_seek(&self, request: ServerRequest, server: &Arc<RpcServer>) {
+        let Some(permit) = self.tasks.enter() else {
+            request.close_connection();
+            return;
+        };
         let service = Arc::clone(&self.service);
         let server = Arc::clone(server);
-        self.runtime.spawn(async move {
+        self.spawn_owned(permit, async move {
             let rpc_request_id = request.request_id;
             let response = match decode_seek_request(request.control()) {
                 Ok(envelope) if envelope.rpc_request_id == rpc_request_id => {
@@ -111,9 +150,13 @@ impl ChunkKvRpcService {
     }
 
     fn handle_scan(&self, request: ServerRequest, server: &Arc<RpcServer>) {
+        let Some(permit) = self.tasks.enter() else {
+            request.close_connection();
+            return;
+        };
         let service = Arc::clone(&self.service);
         let server = Arc::clone(server);
-        self.runtime.spawn(async move {
+        self.spawn_owned(permit, async move {
             let rpc_request_id = request.request_id;
             let response = match decode_scan_request(request.control()) {
                 Ok(envelope) if envelope.rpc_request_id == rpc_request_id => {
@@ -129,9 +172,13 @@ impl ChunkKvRpcService {
     }
 
     fn handle_bounded_scan(&self, request: ServerRequest, server: &Arc<RpcServer>) {
+        let Some(permit) = self.tasks.enter() else {
+            request.close_connection();
+            return;
+        };
         let service = Arc::clone(&self.service);
         let server = Arc::clone(server);
-        self.runtime.spawn(async move {
+        self.spawn_owned(permit, async move {
             let id = request.request_id;
             let response = match decode_bounded_scan_request(request.control()) {
                 Ok((envelope, budget)) if envelope.rpc_request_id == id => {
@@ -147,9 +194,13 @@ impl ChunkKvRpcService {
     }
 
     fn handle_multi_get(&self, request: ServerRequest, server: &Arc<RpcServer>) {
+        let Some(permit) = self.tasks.enter() else {
+            request.close_connection();
+            return;
+        };
         let service = Arc::clone(&self.service);
         let server = Arc::clone(server);
-        self.runtime.spawn(async move {
+        self.spawn_owned(permit, async move {
             let id = request.request_id;
             let create_nano = request.rpc_create_nano;
             let response = match decode_multi_get_request(request.control()) {
@@ -177,9 +228,13 @@ impl ChunkKvRpcService {
     }
 
     fn handle_batch_mutation(&self, request: ServerRequest, server: &Arc<RpcServer>) {
+        let Some(permit) = self.tasks.enter() else {
+            request.close_connection();
+            return;
+        };
         let service = Arc::clone(&self.service);
         let server = Arc::clone(server);
-        self.runtime.spawn(async move {
+        self.spawn_owned(permit, async move {
             let id = request.request_id;
             let create_nano = request.rpc_create_nano;
             let response = match decode_batch_mutation_request(request.control()) {

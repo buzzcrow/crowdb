@@ -244,6 +244,8 @@ void crowdb_rpc_client_attach(crowdb_rpc_client_t client, crowdb_rpc_conn_t conn
 
 // Completion callback — invoked on the C++ I/O thread when the response
 // arrives or on error. Must be O(1) and non-blocking.
+// Takes ownership of each non-null buffer and must release it with
+// crowdb_rpc_buffer_release after use.
 typedef void (*crowdb_rpc_on_complete)(uint64_t request_id, crowdb_rpc_buffer_t control, crowdb_rpc_buffer_t data,
                                        crowdb_rpc_status status, void *user_data);
 
@@ -251,7 +253,6 @@ typedef void (*crowdb_rpc_on_complete)(uint64_t request_id, crowdb_rpc_buffer_t 
 // any send(). The pool is sized to the next power of two >=
 // max_in_flight. Slots are indexed by request_id & mask. Zero per-call
 // heap allocation — the callback + user_data live in pre-allocated slots.
-// Flow: doc/design/rpc/rpc-flow-analysis.md § "Flow".
 void crowdb_rpc_client_set_completion_pool_size(crowdb_rpc_client_t client, uint32_t max_in_flight);
 
 // Start the timeout reaper thread. Scans the slab pool + pending map

@@ -10,12 +10,12 @@ use crowdb_chunkdb::routing::BindingCache;
 use crowdb_chunkdb::runtime::RuntimeContext;
 use crowdb_chunkdb::topology::TopologyCache;
 use crowdb_common::metrics::MetricsRegistry;
-use crowdb_kv_client::{CrowdbKvClient, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{PaxosKvClient, ServiceRegistryClient};
 use std::sync::Arc;
 use std::time::Duration;
 
 pub fn runtime_context(
-    kv: Arc<CrowdbKvClient>,
+    kv: Arc<PaxosKvClient>,
     bindings: BindingCache,
     guard: Arc<RangeGuard>,
 ) -> (RuntimeContext, tokio::sync::watch::Sender<bool>) {

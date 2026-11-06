@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright 2026-present Gian <crow.db@outlook.com>
 # Licensed under the Apache License, Version 2.0.
-"""Exercise native measurement ownership and real attached KV workloads."""
+"""Exercise native fixture ownership and ordinary Paxos-KV data commands."""
 
 import argparse
 import json
@@ -75,17 +75,19 @@ def main():
         else:
             raise AssertionError("foreign control token was accepted")
         command(state, "reset", "--group", "0", succeeds=False)
-        command(state, "client", "--", "kv", "group", "add", "-s", "0", "-g", "1", "-n", "1,2,3")
-        command(state, "client", "--", "bench", "kv", "prepare", "--store", "0", "--group", "1",
-                "--keys", "16", "--value-size", "64")
-        for workload in ("read", "scan", "write"):
-            command(state, "client", "--", "bench", "kv", workload, "--store", "0", "--group", "1",
-                    "--duration-secs", "1", "--loader-num", "1", "--connections", "1",
-                    "--key-space", "16", "--value-size", "64")
-            report = json.loads(command(state, "report"))
-            assert report["total_ops"] > 0 and report["total_errors"] == 0, report
-        command(state, "client", "--", "bench", "kv", "invalid", succeeds=False)
-        command(state, "report", succeeds=False)
+        command(state, "client", "--", "paxos-kv", "group", "add", "-s", "0", "-g", "1", "-n", "1,2,3")
+        command(state, "client", "--", "paxos-kv", "data", "put", "-s", "0", "-g", "1",
+                "-k", "fixture-smoke-key", "-v", "fixture-smoke-value")
+        fetched = command(state, "client", "--", "paxos-kv", "data", "get", "-s", "0", "-g", "1",
+                          "-k", "fixture-smoke-key")
+        assert "fixture-smoke-value" in fetched, fetched
+        scanned = command(state, "client", "--", "paxos-kv", "data", "scan", "-s", "0", "-g", "1",
+                          "--prefix", "fixture-smoke-")
+        assert "fixture-smoke-key" in scanned and "fixture-smoke-value" in scanned, scanned
+        # A management fixture is not an implicit benchmark deployment.
+        # Container load/report coverage belongs to the container benchmark tests.
+        command(state, "client", "--", "bench", "paxos-kv", "write", succeeds=False)
+        command(state, "client", "--", "bench", "paxos-kv", "invalid", succeeds=False)
         result = json.loads(command(state, "reset", "--group", "1"))
         assert result["new_leader"] and result["wiped_nodes"] == 3, result
         command(state, "stop")
@@ -101,7 +103,7 @@ def main():
         stopped = json.loads(abandoned.with_suffix(".fixture-stopped.json").read_text())
         assert stopped["ok"], stopped
         assert unrelated.poll() is None, "owner-exit cleanup stopped an unrelated process"
-        print(f"PASS: native measurement ownership and KV workloads; artifacts: {args.artifacts}")
+        print(f"PASS: native fixture ownership and Paxos-KV data commands; artifacts: {args.artifacts}")
     finally:
         command(state, "stop")
         if owner is not None and owner.poll() is None:

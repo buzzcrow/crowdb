@@ -57,11 +57,15 @@ fn defaults_close_the_documented_timing_contract() {
     assert_eq!(config.storage.stream_writer_lease_ms, 30_000);
     assert_eq!(config.storage.tree_chunk_capacity_bytes, 256 * 1024 * 1024);
     assert_eq!(config.storage.tree_strip_capacity_bytes, 0);
+    assert_eq!(config.storage.tree_pin_release_slots, 1_048_576);
     assert_eq!(config.storage.stream_chunk_capacity_bytes, 256 * 1024 * 1024);
     assert_eq!(config.storage.diskio_connections_per_endpoint, 1);
     assert_eq!(config.storage.diskio_rpc_workers, 2);
     assert_eq!(config.rpc_workers, 2);
-    assert_eq!(config.rpc_advertise_addr, "127.0.0.1:15200");
+    assert_eq!(
+        config.rpc_advertise_addr,
+        format!("127.0.0.1:{}", crowdb_protocol::CHUNK_KV_RPC_BASE)
+    );
 
     config.monitor.self_fence_margin_ms = 3_000;
     assert!(matches!(config.validate(), Err(ConfigError::Invalid(_))));
@@ -178,4 +182,33 @@ fn data_weight_is_reserved_until_tree_range_metrics_are_available() {
     config.validate().unwrap();
     config.balance.byte_weight_percent = 80;
     assert!(config.validate().is_err());
+}
+
+#[test]
+fn storage_defaults_round_trip_without_a_tree_mode_switch() {
+    let config = ChunkKvServerConfig {
+        instance_id: 1,
+        ..Default::default()
+    };
+    config.validate().unwrap();
+    let encoded = toml::to_string(&config).unwrap();
+    let restored: ChunkKvServerConfig = toml::from_str(&encoded).unwrap();
+    assert_eq!(config, restored);
+}
+
+#[test]
+fn pin_release_capacity_rejects_zero_and_the_native_closed_bit() {
+    let mut config = ChunkKvServerConfig {
+        instance_id: 1,
+        ..Default::default()
+    };
+    for capacity in [0, usize::MAX] {
+        config.storage.tree_pin_release_slots = capacity;
+        let error = config.validate().unwrap_err();
+        assert!(error.to_string().contains("tree_pin_release_slots"), "{error}");
+    }
+    config.storage.tree_pin_release_slots = 64;
+    config.validate().unwrap();
+    let restored: ChunkKvServerConfig = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+    assert_eq!(restored.storage.tree_pin_release_slots, 64);
 }

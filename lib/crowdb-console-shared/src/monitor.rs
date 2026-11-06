@@ -147,7 +147,7 @@ impl MonitorCache {
     /// to fail with "no known leader".
     ///
     /// Used by `AppState::op_context` to seed the shared
-    /// `CrowdbKvClient` with the actual group-0 endpoint so sysdata
+    /// `PaxosKvClient` with the actual group-0 endpoint so sysdata
     /// writes reach the right listener (the configured `rpc_url` is
     /// only correct for the bootstrap store, not for store 0 once the
     /// system group has been initialized on a different port).

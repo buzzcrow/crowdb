@@ -243,7 +243,7 @@ TEST(ApplyExternal, RoundTripReadBeforeFlush)
     EXPECT_EQ(slot, 1U);
     EXPECT_EQ(value.size(), 4096U);
     EXPECT_EQ(std::memcmp(value.data(), big.data(), 4096), 0);
-    EXPECT_EQ(drops.load(), 0); // still in memtable
+    EXPECT_EQ(drops.load(), 1); // Unknown backing capacity is copied during admission.
 }
 
 TEST(ApplyExternal, RoundTripReadAfterFlush)
@@ -257,7 +257,7 @@ TEST(ApplyExternal, RoundTripReadAfterFlush)
     ops.push_back(
         {.key = "k2", .flags = 0, .value = buffer::wrap_external(big.data(), big.size(), &drops, count_drop)});
     EXPECT_TRUE(t->apply_external(1, std::move(ops)).ok());
-    EXPECT_TRUE(t->flush().ok()); // drain -> materialize -> drop_fn fires
+    EXPECT_TRUE(t->flush().ok());
     EXPECT_EQ(drops.load(), 1);
     uint64_t    slot;
     std::string value;
@@ -288,7 +288,7 @@ TEST(ApplyExternal, MultiKeyBatchAtomicity)
         EXPECT_EQ(slot, 1U);
         EXPECT_EQ(value.size(), 256U);
     }
-    EXPECT_EQ(drops.load(), 0); // all still in memtable
+    EXPECT_EQ(drops.load(), 3); // Every unknown backing owner was released after copying.
 }
 
 TEST(ApplyExternal, IntraBatchLastKeyWins)
@@ -303,7 +303,7 @@ TEST(ApplyExternal, IntraBatchLastKeyWins)
     ops.push_back({.key = "k", .flags = 0, .value = buffer::wrap_external(v1.data(), v1.size(), &drops, count_drop)});
     ops.push_back({.key = "k", .flags = 0, .value = buffer::wrap_external(v2.data(), v2.size(), &drops, count_drop)});
     EXPECT_TRUE(t->apply_external(1, std::move(ops)).ok());
-    EXPECT_EQ(drops.load(), 1); // v1 freed (last-key-wins), v2 retained
+    EXPECT_EQ(drops.load(), 2); // Duplicate and selected unknown owners are both released.
     uint64_t    slot;
     std::string value;
     EXPECT_TRUE(t->get("k", &slot, &value));

@@ -1,25 +1,20 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-// Packed 64-bit mapping-table slot word (plan-tree #14a).
+// Packed 64-bit mapping slot words. Segment recovery validates durable words
+// before constructing typed backing descriptors.
 //
-// The *same* encoding is used in
-// memory and on disk, so a persisted segment image is literally the array of
-// packed words and recovery installs them with zero decode:
+// Zero is empty. A nonzero word whose low three bits are zero is an aligned
+// resident PageBase pointer, valid only in memory.
 //
-//   word == 0                    -> empty (dead or never-allocated PID)
-//   (word & 7) == 0 (and != 0)   -> resident: PageBase* (8-byte aligned) [memory only]
-//   (word & 1) == 1              -> legacy/local unloaded descriptor:
-//                                     bits [63:24] iu_index  (durable PageAddr, in IUs)
-//                                     bits [23:1]  iu_count   (page length, in IUs)
-//                                     bit  [0]     tag = 1
-//   (word & 7) == 2              -> chunk page-reference descriptor:
-//                                     bits [63:24] reference ordinal
-//                                     bits [23:3]  IU count
-//                                     bits [2:0]   tag = 2
+// A local descriptor has tag 1 in bit 0, an IU count in bits [23:1], and an
+// address measured in IUs in bits [63:24].
 //
-// Resident pointers are never persisted; on disk a slot is only `0` or a tagged
-// unloaded descriptor. Adopted by the live `MappingTable` (mapping_table.h).
+// A Chunk reference has tag 2 in bits [2:0], an IU count in bits [23:3], and a
+// reference ordinal in bits [63:24].
+//
+// Resident pointers are never persisted; disk slots are empty or tagged
+// descriptors. The legacy mutable mapping model survives only in tests.
 #pragma once
 
 #include "crowdb-tree/maptable/page_types.h" // PageBase

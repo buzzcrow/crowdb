@@ -7,21 +7,19 @@
 use crowdb_protocol::ServicePort;
 use crowdb_protocol::{
     ACCESS_SERVER_DATASET_HTTP_BASE, ACCESS_SERVER_HEALTH_HTTP_BASE, ACCESS_SERVER_HTTP_BASE,
-    ACCESS_SERVER_ICEBERG_HTTP_BASE, CHUNKDB_HTTP_BASE, CHUNKDB_LISTEN_BASE, CHUNKDB_RPC_BASE,
-    CHUNK_KV_HTTP_BASE, CHUNK_KV_RPC_BASE, DISKDB_HTTP_BASE, DISKDB_LISTEN_BASE, DISKDB_RPC_BASE,
-    DISKIO_RPC_BASE, KV_SERVER_LISTEN_BASE, KV_SERVER_MGMT_BASE, WEB_BASE,
+    ACCESS_SERVER_ICEBERG_HTTP_BASE, CHUNKDB_HTTP_BASE, CHUNKDB_RPC_BASE, CHUNK_KV_HTTP_BASE,
+    CHUNK_KV_RPC_BASE, DISKDB_HTTP_BASE, DISKDB_RPC_BASE, DISKIO_RPC_BASE, PAXOS_KV_SERVER_MGMT_BASE,
+    PAXOS_KV_SERVER_RPC_BASE, WEB_BASE,
 };
 
 // ── base constants match enum ──────────────────────────────────
 
 #[test]
 fn base_constants_match_enum_base() {
-    assert_eq!(ServicePort::KvServerMgmt.base(), KV_SERVER_MGMT_BASE);
-    assert_eq!(ServicePort::KvServerListen.base(), KV_SERVER_LISTEN_BASE);
-    assert_eq!(ServicePort::DiskdbListen.base(), DISKDB_LISTEN_BASE);
+    assert_eq!(ServicePort::PaxosKvServerMgmt.base(), PAXOS_KV_SERVER_MGMT_BASE);
+    assert_eq!(ServicePort::PaxosKvServerRpc.base(), PAXOS_KV_SERVER_RPC_BASE);
     assert_eq!(ServicePort::DiskdbHttp.base(), DISKDB_HTTP_BASE);
     assert_eq!(ServicePort::DiskdbRpc.base(), DISKDB_RPC_BASE);
-    assert_eq!(ServicePort::ChunkdbListen.base(), CHUNKDB_LISTEN_BASE);
     assert_eq!(ServicePort::ChunkdbHttp.base(), CHUNKDB_HTTP_BASE);
     assert_eq!(ServicePort::ChunkdbRpc.base(), CHUNKDB_RPC_BASE);
     assert_eq!(ServicePort::DiskioRpc.base(), DISKIO_RPC_BASE);
@@ -39,30 +37,28 @@ fn base_constants_match_enum_base() {
     );
 }
 
-// ── known defaults (new port map, all >10000) ──────────────────
+// ── known defaults (default port map) ──────────────────
 
 #[test]
 fn known_base_ports() {
-    assert_eq!(KV_SERVER_MGMT_BASE, 10000);
-    assert_eq!(KV_SERVER_LISTEN_BASE, 10100);
-    assert_eq!(DISKDB_LISTEN_BASE, 11000);
-    assert_eq!(DISKDB_HTTP_BASE, 11100);
-    assert_eq!(DISKDB_RPC_BASE, 11200);
-    assert_eq!(CHUNKDB_LISTEN_BASE, 12000);
-    assert_eq!(CHUNKDB_HTTP_BASE, 12100);
-    assert_eq!(CHUNKDB_RPC_BASE, 12200);
-    assert_eq!(DISKIO_RPC_BASE, 13000);
-    assert_eq!(WEB_BASE, 14000);
-    assert_eq!(CHUNK_KV_HTTP_BASE, 15100);
-    assert_eq!(CHUNK_KV_RPC_BASE, 15200);
-    assert_eq!(ACCESS_SERVER_HTTP_BASE, 16000);
-    assert_eq!(ACCESS_SERVER_ICEBERG_HTTP_BASE, 17000);
-    assert_eq!(ACCESS_SERVER_DATASET_HTTP_BASE, 18000);
+    assert_eq!(PAXOS_KV_SERVER_MGMT_BASE, 10135);
+    assert_eq!(PAXOS_KV_SERVER_RPC_BASE, 11135);
+    assert_eq!(DISKDB_HTTP_BASE, 13135);
+    assert_eq!(DISKDB_RPC_BASE, 14135);
+    assert_eq!(CHUNKDB_HTTP_BASE, 16135);
+    assert_eq!(CHUNKDB_RPC_BASE, 17135);
+    assert_eq!(DISKIO_RPC_BASE, 18135);
+    assert_eq!(WEB_BASE, 6135);
+    assert_eq!(CHUNK_KV_HTTP_BASE, 20135);
+    assert_eq!(CHUNK_KV_RPC_BASE, 21135);
+    assert_eq!(ACCESS_SERVER_HTTP_BASE, 7135);
+    assert_eq!(ACCESS_SERVER_ICEBERG_HTTP_BASE, 8135);
+    assert_eq!(ACCESS_SERVER_DATASET_HTTP_BASE, 9135);
     assert_eq!(
         ServicePort::AccessServerHealthHttp.base(),
         ACCESS_SERVER_HEALTH_HTTP_BASE
     );
-    assert_eq!(ACCESS_SERVER_HEALTH_HTTP_BASE, 19000);
+    assert_eq!(ACCESS_SERVER_HEALTH_HTTP_BASE, 25135);
 }
 
 // ── stride (all stride 1 — no paired-port logic) ───────────────
@@ -70,12 +66,10 @@ fn known_base_ports() {
 #[test]
 fn all_services_have_stride_one() {
     for svc in [
-        ServicePort::KvServerMgmt,
-        ServicePort::KvServerListen,
-        ServicePort::DiskdbListen,
+        ServicePort::PaxosKvServerMgmt,
+        ServicePort::PaxosKvServerRpc,
         ServicePort::DiskdbHttp,
         ServicePort::DiskdbRpc,
-        ServicePort::ChunkdbListen,
         ServicePort::ChunkdbHttp,
         ServicePort::ChunkdbRpc,
         ServicePort::DiskioRpc,
@@ -86,6 +80,7 @@ fn all_services_have_stride_one() {
         ServicePort::AccessServerIcebergHttp,
         ServicePort::AccessServerDatasetHttp,
         ServicePort::AccessServerHealthHttp,
+        ServicePort::MonitorHttp,
     ] {
         assert_eq!(svc.stride(), 1, "{svc:?} must have stride 1");
     }
@@ -96,12 +91,10 @@ fn all_services_have_stride_one() {
 #[test]
 fn port_instance_zero_is_base() {
     for svc in [
-        ServicePort::KvServerMgmt,
-        ServicePort::KvServerListen,
-        ServicePort::DiskdbListen,
+        ServicePort::PaxosKvServerMgmt,
+        ServicePort::PaxosKvServerRpc,
         ServicePort::DiskdbHttp,
         ServicePort::DiskdbRpc,
-        ServicePort::ChunkdbListen,
         ServicePort::ChunkdbHttp,
         ServicePort::ChunkdbRpc,
         ServicePort::DiskioRpc,
@@ -112,6 +105,7 @@ fn port_instance_zero_is_base() {
         ServicePort::AccessServerIcebergHttp,
         ServicePort::AccessServerDatasetHttp,
         ServicePort::AccessServerHealthHttp,
+        ServicePort::MonitorHttp,
     ] {
         assert_eq!(svc.port(0), svc.base());
     }
@@ -119,35 +113,33 @@ fn port_instance_zero_is_base() {
 
 #[test]
 fn port_increments_by_one() {
-    assert_eq!(ServicePort::KvServerMgmt.port(0), 10000);
-    assert_eq!(ServicePort::KvServerMgmt.port(1), 10001);
-    assert_eq!(ServicePort::KvServerMgmt.port(99), 10099);
+    assert_eq!(ServicePort::PaxosKvServerMgmt.port(0), 10135);
+    assert_eq!(ServicePort::PaxosKvServerMgmt.port(1), 10136);
+    assert_eq!(ServicePort::PaxosKvServerMgmt.port(99), 10234);
 
-    assert_eq!(ServicePort::KvServerListen.port(0), 10100);
-    assert_eq!(ServicePort::KvServerListen.port(1), 10101);
-    assert_eq!(ServicePort::KvServerListen.port(99), 10199);
+    assert_eq!(ServicePort::PaxosKvServerRpc.port(0), 11135);
+    assert_eq!(ServicePort::PaxosKvServerRpc.port(1), 11136);
+    assert_eq!(ServicePort::PaxosKvServerRpc.port(99), 11234);
 
-    assert_eq!(ServicePort::DiskdbRpc.port(0), 11200);
-    assert_eq!(ServicePort::DiskdbRpc.port(1), 11201);
-    assert_eq!(ServicePort::DiskdbRpc.port(99), 11299);
+    assert_eq!(ServicePort::DiskdbRpc.port(0), 14135);
+    assert_eq!(ServicePort::DiskdbRpc.port(1), 14136);
+    assert_eq!(ServicePort::DiskdbRpc.port(99), 14234);
 
-    assert_eq!(ServicePort::DiskioRpc.port(0), 13000);
-    assert_eq!(ServicePort::DiskioRpc.port(1), 13001);
-    assert_eq!(ServicePort::DiskioRpc.port(99), 13099);
+    assert_eq!(ServicePort::DiskioRpc.port(0), 18135);
+    assert_eq!(ServicePort::DiskioRpc.port(1), 18136);
+    assert_eq!(ServicePort::DiskioRpc.port(99), 18234);
 }
 
 // ── non-overlap across service types ───────────────────────────
 
 #[test]
 fn port_ranges_do_not_overlap() {
-    // Each service type's first 100 instances (full sub-range).
+    // Check every declared instance, including the edges of adjacent blocks.
     let all_services = [
-        ServicePort::KvServerMgmt,
-        ServicePort::KvServerListen,
-        ServicePort::DiskdbListen,
+        ServicePort::PaxosKvServerMgmt,
+        ServicePort::PaxosKvServerRpc,
         ServicePort::DiskdbHttp,
         ServicePort::DiskdbRpc,
-        ServicePort::ChunkdbListen,
         ServicePort::ChunkdbHttp,
         ServicePort::ChunkdbRpc,
         ServicePort::DiskioRpc,
@@ -158,11 +150,12 @@ fn port_ranges_do_not_overlap() {
         ServicePort::AccessServerIcebergHttp,
         ServicePort::AccessServerDatasetHttp,
         ServicePort::AccessServerHealthHttp,
+        ServicePort::MonitorHttp,
     ];
 
     let mut seen: std::collections::HashSet<u16> = std::collections::HashSet::new();
     for svc in all_services {
-        let ports: std::collections::HashSet<u16> = (0..100_u16).map(|i| svc.port(i)).collect();
+        let ports: std::collections::HashSet<u16> = (0..svc.range_size()).map(|i| svc.port(i)).collect();
         assert!(
             seen.is_disjoint(&ports),
             "{svc:?} ports overlap with a prior service type",
@@ -176,12 +169,10 @@ fn port_ranges_do_not_overlap() {
 #[test]
 fn range_sizes_match_listener_scopes() {
     for svc in [
-        ServicePort::KvServerMgmt,
-        ServicePort::KvServerListen,
-        ServicePort::DiskdbListen,
+        ServicePort::PaxosKvServerMgmt,
+        ServicePort::PaxosKvServerRpc,
         ServicePort::DiskdbHttp,
         ServicePort::DiskdbRpc,
-        ServicePort::ChunkdbListen,
         ServicePort::ChunkdbHttp,
         ServicePort::ChunkdbRpc,
         ServicePort::DiskioRpc,
@@ -192,14 +183,9 @@ fn range_sizes_match_listener_scopes() {
         ServicePort::AccessServerIcebergHttp,
         ServicePort::AccessServerDatasetHttp,
         ServicePort::AccessServerHealthHttp,
+        ServicePort::MonitorHttp,
     ] {
-        let expected = match svc {
-            ServicePort::AccessServerHttp
-            | ServicePort::AccessServerIcebergHttp
-            | ServicePort::AccessServerDatasetHttp
-            | ServicePort::AccessServerHealthHttp => 1000,
-            _ => 500,
-        };
+        let expected = 1000;
         assert_eq!(svc.range_size(), expected, "{svc:?} range_size");
     }
 }
@@ -218,9 +204,25 @@ fn access_listener_scopes_have_disjoint_thousand_port_blocks() {
         assert!(names.insert(service.name()));
         for instance in 0..service.range_size() {
             let port = service.port(instance);
-            assert!((16000..20000).contains(&port));
+            assert!((7135..10135).contains(&port) || (25135..26135).contains(&port));
             assert!(seen.insert(port), "overlapping access listener port {port}");
         }
     }
     assert_eq!(seen.len(), 4000);
+}
+
+#[test]
+fn management_and_rpc_defaults_are_one_thousand_apart() {
+    for (management, rpc) in [
+        (ServicePort::PaxosKvServerMgmt, ServicePort::PaxosKvServerRpc),
+        (ServicePort::DiskdbHttp, ServicePort::DiskdbRpc),
+        (ServicePort::ChunkdbHttp, ServicePort::ChunkdbRpc),
+        (ServicePort::ChunkKvHttp, ServicePort::ChunkKvRpc),
+    ] {
+        assert_eq!(rpc.base() - management.base(), 1000);
+        for offset in 0..3 {
+            assert_eq!(management.port(offset), management.base() + offset);
+        }
+        assert_eq!(management.base() % 1000, 135);
+    }
 }

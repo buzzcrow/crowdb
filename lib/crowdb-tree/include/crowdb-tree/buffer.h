@@ -36,10 +36,12 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <new>
 
 namespace crowdb::tree
 {
+class ExternalAllocation;
 
 class buffer
 {
@@ -118,13 +120,23 @@ class buffer
     static buffer wrap_external(const uint8_t *data, size_t len, void *owner, void (*drop_fn)(void *))
     {
         buffer b;
-        b.mode_         = mode::kExternal;
-        b.heap_         = const_cast<uint8_t *>(data); // borrowed; never freed through heap_
-        b.size_         = len;
-        b.capacity_     = len;
-        b.ext_.drop_fn_ = drop_fn;
-        b.ext_.owner_   = owner;
+        b.mode_            = mode::kExternal;
+        b.heap_            = const_cast<uint8_t *>(data); // borrowed; never freed through heap_
+        b.size_            = len;
+        b.capacity_        = len;
+        b.ext_.drop_fn_    = drop_fn;
+        b.ext_.owner_      = owner;
+        b.ext_.allocation_ = nullptr;
         return b;
+    }
+
+    // Retain a checked slice of one capacity-accounted allocation. This keeps
+    // the canonical owner alive without charging its payload again per slice.
+    static buffer share_external(std::shared_ptr<const ExternalAllocation> allocation, size_t offset, size_t len);
+
+    [[nodiscard]] const ExternalAllocation *external_allocation() const noexcept
+    {
+        return mode_ == mode::kExternal ? ext_.allocation_ : nullptr;
     }
 
     // Take ownership of a raw heap pointer already allocated by the matching
@@ -290,9 +302,10 @@ class buffer
             heap_ = nullptr;
         }
         else if (mode_ == mode::kExternal) {
-            heap_         = o.heap_;
-            ext_.drop_fn_ = o.ext_.drop_fn_;
-            ext_.owner_   = o.ext_.owner_;
+            heap_            = o.heap_;
+            ext_.drop_fn_    = o.ext_.drop_fn_;
+            ext_.owner_      = o.ext_.owner_;
+            ext_.allocation_ = o.ext_.allocation_;
         }
         else {
             heap_ = o.heap_;
@@ -338,8 +351,9 @@ class buffer
 
         struct
         {
-            void (*drop_fn_)(void *); // called on destruction (kExternal)
-            void *owner_;             // opaque Rust handle (e.g. boxed Arc<Bytes>)
+            void (*drop_fn_)(void *);         // called on destruction (kExternal)
+            void                     *owner_; // opaque Rust handle (e.g. boxed Arc<Bytes>)
+            const ExternalAllocation *allocation_;
         } ext_;
     };
 };

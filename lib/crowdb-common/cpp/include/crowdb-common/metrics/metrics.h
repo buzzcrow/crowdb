@@ -22,6 +22,7 @@
 #include "crowdb-common/metrics/callback_gauge.h"
 #include "crowdb-common/metrics/counter.h"
 #include "crowdb-common/metrics/gauge.h"
+#include "crowdb-common/metrics/inline_callback_gauge.h"
 #include "crowdb-common/metrics/latency_histogram.h"
 #include "crowdb-common/metrics/latency_summary.h"
 
@@ -29,7 +30,9 @@
 #include <condition_variable>
 #include <cstdint>
 #include <cstdio>
+#include <list>
 #include <memory>
+#include <memory_resource>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -43,7 +46,21 @@ namespace crowdb::common::metrics
 class MetricsRegistry
 {
   public:
-    MetricsRegistry() = default;
+    MetricsRegistry();
+    // The owner outlives every PMR name, node and flush scratch allocation.
+    explicit MetricsRegistry(std::shared_ptr<std::pmr::memory_resource> resource);
+
+    template <class F>
+    InlineCallbackGauge *register_callback_gauge_inline(std::string_view prefix, std::string_view suffix, F callback)
+    {
+        return register_inline(prefix, suffix, InlineCallbackGauge::Callback(callback));
+    }
+
+    template <class F> InlineCallbackGauge *register_callback_gauge_inline(std::string_view name, F callback)
+    {
+        return register_callback_gauge_inline(name, {}, callback);
+    }
+
     ~MetricsRegistry();
 
     MetricsRegistry(const MetricsRegistry &)            = delete;
@@ -81,6 +98,11 @@ class MetricsRegistry
     void stop();
 
   private:
+    InlineCallbackGauge                           *register_inline(std::string_view prefix, std::string_view suffix,
+                                                                   InlineCallbackGauge::Callback callback);
+    std::shared_ptr<std::pmr::memory_resource>     resource_owner_;
+    std::pmr::memory_resource                     *resource_;
+    std::pmr::list<InlineCallbackGauge>            inline_gauges_;
     std::vector<std::unique_ptr<Counter>>          counters_;
     std::vector<std::unique_ptr<Gauge>>            gauges_;
     std::vector<std::unique_ptr<CallbackGauge>>    callback_gauges_;

@@ -9,7 +9,7 @@ use crowdb_console_shared::{
     ops::OpContext,
     ConsoleConfig,
 };
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient, GetOutcome, ReadMode};
+use crowdb_paxos_kv_client::{ClientConfig, GetOutcome, PaxosKvClient, ReadMode};
 use crowdb_protocol::mgmt::node::{recovery::MemberEndpoints, NodeServiceAction};
 use std::{path::Path, sync::Arc};
 
@@ -23,7 +23,7 @@ pub(super) async fn reconcile(
     let local = super::identity(root)?.endpoint;
     let mut config = topology.clone();
     let seeds = apply_member_endpoints(&mut config, endpoints)?;
-    let client = Arc::new(CrowdbKvClient::new(ClientConfig::new(seeds.clone())));
+    let client = Arc::new(PaxosKvClient::new(ClientConfig::new(seeds.clone())));
     let GetOutcome::Found { value, .. } = client
         .get(
             0,
@@ -135,7 +135,7 @@ fn apply_member_endpoints(config: &mut ConsoleConfig, endpoints: &MemberEndpoint
 
 async fn rebind(
     root: &Path,
-    client: &CrowdbKvClient,
+    client: &PaxosKvClient,
     operation: &PreparedBootstrap,
     node: u64,
     current: &str,
@@ -240,6 +240,6 @@ pub async fn rebind_recovery_services_for_tests(
     seeds: &[String],
     complete: bool,
 ) -> Result<bool> {
-    let client = CrowdbKvClient::new(ClientConfig::new(vec!["http://127.0.0.1:9".into()]));
+    let client = PaxosKvClient::new(ClientConfig::new(vec!["http://127.0.0.1:9".into()]));
     rebind(root, &client, operation, node, current, seeds, complete).await
 }

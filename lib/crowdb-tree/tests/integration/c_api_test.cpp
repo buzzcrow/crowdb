@@ -16,6 +16,7 @@
 #include <vector>
 
 #ifdef __linux__
+#    include <poll.h>
 #    include <unistd.h>
 #endif
 
@@ -101,6 +102,9 @@ TEST(CApi, InjectedStoreRetainedAndFutureSignalsCompletionFd)
     int32_t fd = -1;
     ASSERT_GE(ct_uring_eventfds(t, &fd, 1), 1U);
     ASSERT_GE(fd, 0);
+    pollfd ready{.fd = fd, .events = POLLIN, .revents = 0};
+    ASSERT_EQ(::poll(&ready, 1, 2000), 1);
+    ASSERT_NE(ready.revents & POLLIN, 0);
     uint64_t completions = 0;
     ASSERT_EQ(::read(fd, &completions, sizeof(completions)), static_cast<ssize_t>(sizeof(completions)));
     EXPECT_EQ(completions, 1U);

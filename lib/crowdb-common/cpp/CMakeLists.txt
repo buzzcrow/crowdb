@@ -48,13 +48,17 @@ endif()
 # Gated behind CROWDB_HAVE_SPDLOG (PUBLIC so includers of log.h see the
 # spdlog branch). Linked PUBLIC because crowdb-common's public headers
 # (log.h, compressing_sink.h) include spdlog headers — consumers must
-# inherit spdlog's INTERFACE_COMPILE_DEFINITIONS (SPDLOG_COMPILED_LIB /
-# SPDLOG_SHARED_LIB / SPDLOG_FMT_EXTERNAL) so they use the dylib's
-# declarations and registry rather than compiling spdlog in
-# SPDLOG_HEADER_ONLY mode (which would give each TU its own inline
-# registry, disjoint from crowdbcommon's set_default_logger calls).
+# inherit the selected spdlog mode and share its registry with
+# crowdbcommon's set_default_logger calls.
 find_package(spdlog REQUIRED)
-target_link_libraries(crowdbcommon PUBLIC spdlog::spdlog)
+option(CROWDB_COMMON_SPDLOG_HEADER_ONLY "Compile spdlog with the consumer's instrumentation" OFF)
+if(CROWDB_COMMON_SPDLOG_HEADER_ONLY)
+  # A prebuilt library hides shared_ptr release/acquire operations from TSan.
+  # Propagate one mode to every consumer so the registry stays consistent.
+  target_link_libraries(crowdbcommon PUBLIC spdlog::spdlog_header_only)
+else()
+  target_link_libraries(crowdbcommon PUBLIC spdlog::spdlog)
+endif()
 target_compile_definitions(crowdbcommon PUBLIC CROWDB_HAVE_SPDLOG=1)
 
 # zlib for gzip compression of rotated log files (compressing_sink).

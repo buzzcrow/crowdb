@@ -16,7 +16,7 @@
 
 #include "crowdb-common/metrics/metrics.h"
 #include "crowdb-common/metrics/system_metrics.h"
-#include "crowdb-kv-client/c_api.h"
+#include "crowdb-paxos-kv-client/c_api.h"
 #include "crowdb-rpc/scheduled_executor.h"
 #include "crowdb-rpc/server/server.h"
 #include "crowdb-rpc/transport/socket_transport.h"

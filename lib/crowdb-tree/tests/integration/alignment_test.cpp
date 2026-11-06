@@ -88,7 +88,7 @@ TEST(Alignment, Iu4096AllocatorReuseStaysAligned)
 
     // Rewrite the same keys repeatedly; aligned gaps are reused so the file stays
     // a 4 KiB multiple and roughly flat.
-    uint64_t slot = 100000;
+    uint64_t slot = 81;
     for (int round = 0; round < 30; ++round) {
         for (int i : {1, 2, 3, 4, 5}) {
             ASSERT_TRUE(t.apply(slot, put_one(make_key(i), "r" + std::to_string(round))).ok());

@@ -3,7 +3,7 @@
 
 use bytes::Bytes;
 use crowdb_diskdb_client::{DiskdbClient, DiskdbRpcTransport};
-use crowdb_kv_client::{CrowdbKvClient, GetOutcome, ReadMode, ServiceRegistryClient};
+use crowdb_paxos_kv_client::{GetOutcome, PaxosKvClient, ReadMode, ServiceRegistryClient};
 use crowdb_protocol::chunk_task::relocation_operation_id;
 use crowdb_protocol::chunkdb::rpc::{
     AllocateChunkRequest, AllocateReplacementSegmentRequest, ChunkType, QueryChunkRequest, Strip, StripType,
@@ -103,7 +103,7 @@ async fn relocation_journal_copies_publishes_then_frees_exact_source() {
     assert!(source_freed(&kv, source).await);
 }
 
-async fn source_freed(kv: &CrowdbKvClient, source: Segment) -> bool {
+async fn source_freed(kv: &PaxosKvClient, source: Segment) -> bool {
     let key = FreeBlockKey {
         disk_id: source.disk_id.unwrap(),
         zone_index: source.zone_index,
@@ -118,7 +118,7 @@ async fn source_freed(kv: &CrowdbKvClient, source: Segment) -> bool {
 }
 
 async fn retired(
-    kv: &CrowdbKvClient,
+    kv: &PaxosKvClient,
     source: Segment,
     target: Segment,
     operation: crowdb_protocol::common::ChunkId,

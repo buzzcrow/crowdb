@@ -41,12 +41,12 @@ fn container_preflight_reuses_explicit_file_ports_with_a_nonzero_offset() {
     let root = crowdb_test_harness::test_dirs::tempdir_in_test_data("node-cli-file-offset");
     let profile = profile(root.path());
     let config = root.path().join("node.toml");
+    let mut services = crowdb_protocol::mgmt::node::deployment::NodeDeploymentPolicy::default()
+        .setup
+        .services;
+    services[0].listeners.rpc_port = Some(30101);
     let inputs = NodeDeploymentOverrides {
-        services: Some(
-            crowdb_protocol::mgmt::node::deployment::NodeDeploymentPolicy::default()
-                .setup
-                .services,
-        ),
+        services: Some(services),
         ..Default::default()
     };
     fs::write(&config, toml::to_string(&inputs).unwrap()).unwrap();
@@ -83,7 +83,7 @@ fn container_preflight_reuses_explicit_file_ports_with_a_nonzero_offset() {
     let accepted = crowdb_monitor::read_node_policy(&root.path().join("install/data"))
         .unwrap()
         .unwrap();
-    assert_eq!(accepted.setup.services[0].listeners.rpc_port, Some(10101));
+    assert_eq!(accepted.setup.services[0].listeners.rpc_port, Some(30102));
 }
 
 #[test]

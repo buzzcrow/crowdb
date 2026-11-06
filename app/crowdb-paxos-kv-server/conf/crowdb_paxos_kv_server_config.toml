@@ -1,0 +1,199 @@
+# Copyright 2026-present Gian <crow.db@outlook.com>
+# Licensed under the Apache License, Version 2.0.
+#
+# Paxos KV Server
+# crowdb-paxos-kv-server --root <data-dir> --config <this-file>
+# Read at startup. Paths, backends and log locations are supplied through the CLI.
+# These are the existing defaults. Find maximum sustainable flush throughput with
+# ample resources first, then reduce resources using the measured curves.
+# Sizes are integer bytes; 1 MiB = 1,048,576 bytes. Tune threads, queues and budgets
+# together for the whole process and all of its Trees.
+# --election-profile replaces the entire [election] table below. Omit that flag
+# when tuning maintenance intervals in this file.
+
+# Preserve the default ACK/apply modes when introducing a configuration file.
+wal_early_ack = true
+async_engine_apply = true
+
+# Keep Tree field additions, removals, renames and explanations in sync with:
+# app/crowdb-chunk-kv-server/conf/crowdb_chunk_kv_server_config.toml
+# Each server owns its values independently; no shared include or override is loaded.
+
+# Process-wide CPU/backend pools. Check CPU quotas and utilization when scaling.
+# Resource diagnostics sample every 100 ms and flush at the server metrics-log
+# interval. Each host/Tree resource reports its limit, current usage, average
+# held sampled usage, and sampled maximum for that log window. The maximum is
+# not an exact transient peak; sample count, age, gaps and errors show coverage.
+# Averages retain fractional counts: worker avg=0.750 means 75% of one worker.
+# Reserved capacity and allocated storage are reported separately. Budget
+# denial counters distinguish Tree limits from shared host limits. Queue-slot
+# usage includes prepaid progress registrations even when no job is runnable.
+# Tree cache rows cover decoded bytes, page slots and request slots; they
+# overlap the storage charged to budget partitions and must not be added to it.
+[tree_runtime.host]
+workers = 4
+# Workers for synchronous PageStore calls; async concurrency also depends on the backend.
+backend_workers = 2
+# Larger queues retain more work without increasing service rate. Recheck
+# lifecycle/Routing reservations when increasing queue capacity.
+cpu_queue_limit = 256
+backend_queue_limit = 256
+# Maximum pending waiters per resource partition.
+max_waiters_per_class = 256
+# Retained queue/control reservation charged to host Routing, not an extra partition.
+lifecycle_bytes = 4_194_304
+
+# Shared limits for all Trees in this process. Resource classes cannot borrow
+# from each other. These limits do not bound total process RSS.
+[tree_runtime.host.limits]
+# Source capture, run/range construction and complete-batch handoff.
+handoff_bytes = 268_435_456
+# Routing, publication, cache/load and controls, including lifecycle reservations.
+routing_bytes = 536_870_912
+# Consolidation, split/merge and checkpoint/writeback work.
+reclaim_bytes = 134_217_728
+# Ordinary writes, payload owners and retained COW allocations.
+writer_bytes = 536_870_912
+# Independent progress capacity for chosen/replay/gap apply work.
+gap_repair_bytes = 268_435_456
+# In-flight I/O tickets. More tickets alone do not parallelize a serial write pipeline.
+io_operations = 128
+
+# Per-Tree limits. All Trees still compete for the shared host resources above.
+[tree_runtime.tree]
+# The producer window must fit this CPU queue. Local queues must fit host queues.
+# This also bounds ordinary apply/backend operation owners; replay has two spare slots.
+cpu_queue_limit = 64
+backend_queue_limit = 64
+# Fixed queue/core/cache descriptors, charged to this Tree's Routing partition.
+# Increase this together with cpu_queue_limit and tuning.cache_max_pages; a
+# larger Routing limit alone does not enlarge this retained control reserve.
+lifecycle_bytes = 1_048_576
+
+[tree_runtime.tree.limits]
+# Same categories as the host limits. Check both levels when changing a partition.
+handoff_bytes = 67_108_864
+routing_bytes = 268_435_456
+# 128 MiB is an adjustable default, not a fixed checkpoint memory target.
+reclaim_bytes = 134_217_728
+writer_bytes = 268_435_456
+gap_repair_bytes = 268_435_456
+io_operations = 64
+
+[tree]
+# Durable frame size; the current public format supports at most 64 KiB.
+# A logical leaf may exceed one frame.
+# Must be at least 512 bytes and satisfy backend IU alignment. Logical working
+# set size is independent of durable frame size.
+frame_bytes = 65_536
+# Decoded-cache byte watermark; tuning.cache_max_pages also limits page count.
+buffer_pool_bytes = 67_108_864
+# 0 = frame_bytes/4. Values larger than this spill to overflow; exactly 16 KiB
+# remains inline with the default frame size.
+max_inline_value = 0
+# LZ4 trades CPU for storage bandwidth/space. Keep compression fixed in comparisons.
+compression_lz4 = false
+# Local block allocation/reclamation unit; ignored by file/mem-block and injected Chunk storage.
+block_size = 67_108_864
+# 0 = backend default: block 4 KiB, mem-block 1 byte, Chunk 64 KiB. A nonzero value
+# must be a power of two that divides frame_bytes.
+iu_size = 0
+
+# Engine work granularity. Select these values from measurements.
+[tree.tuning]
+# Soft per-source rotation thresholds. Crossing either requests rotation;
+# 0 requests rotation after every nonempty write.
+# The source_max_* hard admission capacities below also apply.
+memtable_flush_bytes = 16_777_216
+memtable_flush_entries = 100_000
+# Includes the writable source; the current read/handoff window requires 2..64.
+max_memtable_count = 10
+# Per-source admitted version/key capacities, including writes not yet applied.
+# Raising soft thresholds alone may not enlarge batches if these limits bind first.
+source_max_entries = 4_096
+source_max_key_bytes = 1_048_576
+# Additional accepted/replay allowance. Size it for accepted apply bursts.
+# Only the next contiguous slot may use gap source capacity; higher holes use ordinary capacity or wait.
+source_max_gap_entries = 1_024
+source_max_gap_key_bytes = 1_048_576
+# 0 = min(host workers, Tree io_operations). Explicit values must fit both limits.
+flush_parallelism = 0
+# Per-handoff-run entry/key/work-byte limits. Value owners are retained independently.
+run_max_entries = 128
+# Effective key capacity is max(run_max_key_bytes, max_key_size).
+run_max_key_bytes = 262_144
+run_max_bytes = 1_048_576
+# Key-arena allocation granularity; must not exceed run_max_key_bytes.
+run_key_block_bytes = 1_024
+# Initial run-install window; later windows double. Balances early visible
+# progress against prefix-array copying cost.
+install_run_window = 64
+# Visits per step/pass; the step size must not exceed the pass limit.
+maintenance_visits_per_step = 64
+maintenance_max_visits = 4_096
+# Candidates/steps per pass. Larger limits increase work and reservations;
+# they do not repair starvation caused by an incorrect scan cursor.
+maintenance_max_candidates = 256
+maintenance_max_steps = 1_024
+# Local scratch per maintenance operation; independent of the total Reclaim budget.
+maintenance_metadata_bytes = 1_048_576
+# Decoded-cache page limit. Check this together with buffer_pool_bytes.
+cache_max_pages = 256
+# Split/merge thresholds for the physical primary record region, not logical leaf limits.
+# Split is capped by frame/format capacity. Merge=0 disables merging; merged
+# output must also fit the hysteresis target of about 75% of the split threshold.
+leaf_split_bytes = 65_502
+leaf_merge_bytes = 16_384
+# Inner separator limit; encoded output must also fit the frame byte capacity.
+inner_max_keys = 256
+# 0 = max(1, inner_max_keys/4).
+inner_merge_keys = 0
+# Maximum key size; 0 = frame_bytes/2. Oversized keys are rejected before admission.
+max_key_size = 0
+
+[paxos]
+# Upstream proposal window, held through native apply even after an async Chosen
+# reply; must not exceed tree_runtime.tree.cpu_queue_limit.
+max_inflight_proposals = 32
+# Keys per proposal; 0 disables coalescing. The current descriptor limit is 64;
+# this must also fit the source gap allowance.
+coalesce_max_keys = 32
+# Skip draining a pending batch when at least this many other coalesced rounds exist.
+coalesce_drain_threshold = 1
+# false = await a window permit; true = return Busy when full. Changes backpressure
+# behavior without increasing service rate.
+reject_on_inflight_window_full = false
+
+[server]
+# RPC I/O workers are separate from Tree CPU and backend workers.
+rpc_workers = 2
+# Connections per replica peer.
+peer_pool_size = 2
+# Enqueue to I/O workers to coalesce writev calls; adds wakeup latency.
+event_write = false
+# Per-connection send queue. More queued work does not increase service rate.
+send_queue_capacity = 4_096
+# Unary scan payload limit for mixed workloads; independent of checkpoint frame size.
+scan_byte_budget = 3_670_016
+
+[election]
+# Watchdog/idle maintenance interval; source rotation also signals maintenance.
+maintenance_tick_ms = 30_000
+# Any of the next three thresholds triggers a durable snapshot. Frequent snapshots
+# add overhead; infrequent snapshots retain dirty state and WAL longer.
+snapshot_slot_threshold = 100_000
+snapshot_time_threshold_ms = 600_000
+# 0 disables the flush-count trigger.
+snapshot_flush_count_threshold = 10
+# Maintenance-forced WAL flush interval. 0 disables this trigger, not the WAL
+# writer's own flush pipeline.
+wal_flush_interval_ms = 60_000
+# Sparse-block relocation interval; 0 disables relocation, not snapshot folding.
+merge_gc_interval_ms = 0
+
+[wal]
+# Segment rotation/GC granularity.
+wal_segment_size = 67_108_864
+# WAL batch size and low-traffic flush watchdog; affect consensus input cost.
+wal_flush_batch_bytes = 65_536
+wal_flush_watchdog_ms = 100

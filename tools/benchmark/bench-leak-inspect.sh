@@ -1,94 +1,41 @@
 #!/usr/bin/env bash
-# --- Leak inspection: run 1T..128T, keep servers alive for heap dump ---
-# Usage: bash tools/benchmark/bench-leak-inspect.sh
+# Copyright 2026-present Gian <crow.db@outlook.com>
+# Licensed under the Apache License, Version 2.0.
+# Inspect cumulative memory against an externally owned container deployment.
+# KV_BENCH_DEPLOYMENT is required. Allocator settings belong to deployment time.
+# No reset between cases: growth is intentionally retained for inspection.
+# Exit leaves the containers running; their owner handles shutdown.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
-
-unset CROWDB_ASAN
-DURATION=20
-KEYSPACE=1000000
-VALUE_SIZE=512
-DEPLOY="leak-inspect-$$-$(date +%s)"
-RUNTIME_ROOT="${CROWDB_RUNTIME_ROOT:-${PIXI_PROJECT_ROOT:-$(pwd)}/.crowdb-runtime}"
-REGRESSION_LOG_ROOT="$RUNTIME_ROOT/artifacts/bench/leak-inspect-$DEPLOY"
-CFG="$REGRESSION_LOG_ROOT/console.toml"
-BENCH_STORE=0
-BENCH_GROUP=1
-REGRESSION_CONFIG="$CFG"
-source tools/benchmark/bench-regression-common.sh
-regression_init
-trap regression_destroy EXIT
-
-echo "=== deploying cluster (win=32, coalesce=16, workers=2, MALLOC_ARENA_MAX=1 + TRIM_THRESHOLD=0) ==="
-MALLOC_ARENA_MAX=1 MALLOC_TRIM_THRESHOLD_=0 regression_fixture_for "$CFG" setup -- --nodes 3 --kind kv \
-    --event-write --peer-pool-size 4 \
-    --max-inflight 32 --coalesce-max-keys 16 \
-    --rpc-workers 2 \
-    --kv-backend mem-block --wal-backend mem-block 2>&1
-
-echo "=== creating bench group $BENCH_STORE/$BENCH_GROUP (group 0 sysdata preserved) ==="
-regression_client_for "$CFG" \
-    kv group add -s "$BENCH_STORE" -g "$BENCH_GROUP" -n 1,2,3 2>&1
-
-sample_rss() {
+source tools/benchmark/bench-kv-common.sh
+[[ $(jq -r '.kind // "container"' "$KV_BENCH_DEPLOYMENT") == container ]] || {
+    echo 'Leak inspection requires a container deployment' >&2; exit 2;
+}
+sample_memory() {
     local label="$1"
-    local total=0 alive=0
-    for pid in $(grep '^pid' "$CFG" | awk '{print $3}'); do
-        if [ -r "/proc/$pid/status" ]; then
-            local rss; rss=$(grep VmRSS "/proc/$pid/status" | awk '{print $2}')
-            if [ -n "$rss" ]; then
-                total=$((total + rss))
-                alive=$((alive + 1))
-            fi
-        fi
-    done
-    local total_mb=$((total / 1024))
-    echo "    rss[$label]: ${total_mb}MB across ${alive} servers" >&2
-    for pid in $(grep '^pid' "$CFG" | awk '{print $3}'); do
-        if [ -r "/proc/$pid/status" ]; then
-            local rss; rss=$(grep VmRSS "/proc/$pid/status" | awk '{print $2}')
-            local mb=$((rss / 1024))
-            echo "      pid=$pid RSS=${mb}MB" >&2
-        fi
-    done
+    docker inspect "${containers[@]}" > "$LOG_ROOT/$label-inspect.json"
+    docker stats --no-stream --format '{{json .}}' "${containers[@]}" | tee "$LOG_ROOT/$label-memory.jsonl"
 }
-
-run_sub() {
-    local threads="$1" conn="$2" label="$3" workers="${4:-2}"
-    echo ">>> $label ..."
-    sample_rss "pre-clean"
-    MALLOC_ARENA_MAX=1 MALLOC_TRIM_THRESHOLD_=0 regression_fixture_for "$CFG" reset --store "$BENCH_STORE" --group "$BENCH_GROUP" 2>&1
-    sample_rss "post-clean"
-    MALLOC_ARENA_MAX=1 MALLOC_TRIM_THRESHOLD_=0 regression_client_for "$CFG" \
-        bench kv write --store "$BENCH_STORE" --group "$BENCH_GROUP" \
-        --duration-secs "$DURATION" \
-        --loader-num "$threads" --connections "$conn" \
-        --key-space "$KEYSPACE" --value-size "$VALUE_SIZE" \
-        --event-write --rpc-workers "$workers" \
-        --verify-bytes 0 2>&1
-    sample_rss "post-bench"
+run_case() {
+    local threads="$1" connections="$2" workers="$3" label="write_${1}t"
+    selected "$label" || return 0
+    sample_memory "$label-before"
+    invoke "$label" write --key-space "$KEYSPACE" --value-size "${KV_BENCH_VALUE_SIZE:-512}" \
+        --loader-num "$threads" --connections "$connections" --rpc-workers "$workers" --event-write
+    sample_memory "$label-after"
 }
+run_case 1 1 2
+run_case 16 2 2
+run_case 64 4 2
+run_case 128 4 4
+finish_cases
+echo "Containers remain running for inspection; their owner must stop them."
 
-sample_rss "post-deploy"
-run_sub 1   1 "write_1t"   2
-run_sub 16  2 "write_16t"  2
-run_sub 64  4 "write_64t"  2
-run_sub 128 4 "write_128t" 4
-
-echo ""
-echo "=== Measurements complete — servers remain owned while inspecting ==="
-echo "Config: $CFG"
-echo "Server PIDs:"
-grep '^pid' "$CFG" | awk '{print "  pid=" $3}'
-sample_rss "final"
-echo ""
-echo "Per-node RSS + heap details:"
-for pid in $(grep '^pid' "$CFG" | awk '{print $3}'); do
-    if [ -r "/proc/$pid/status" ]; then
-        local_rss=$(grep VmRSS "/proc/$pid/status" | awk '{print $2}')
-        local_mb=$((local_rss / 1024))
-        echo "  pid=$pid RSS=${local_mb}MB"
-    fi
-done
-echo "Inspect the services now; Ctrl-C stops this fixture and its owned services."
-while sleep 60; do :; done
+# Diagnostic history (2026-10-28 Asia/Shanghai; raw CLI timestamps are UTC 2026-10-27)
+# AMD Ryzen 9 5950X, Linux x86_64, 32 logical CPUs; 3-node host network.
+# Container cumulative-memory smoke; 1/2/1; 1k keys x 512B; no CPU/memory quota; not a leak-freedom proof
+# Artifacts: .crowdb-runtime/artifacts/tools-migration-20261028/leak
+# 2026-10-27 write_128t host-container ops/s=148813.0 latency_ns={"avg":859382.5470557008,"count":297626,"max":2702898,"min":344565,"p50":835583,"p99":1449983,"p999":1744895} passed=true
+# 2026-10-27 write_16t host-container ops/s=44567.5 latency_ns={"avg":358787.00964828633,"count":89135,"max":3372416,"min":199503,"p50":342015,"p99":618495,"p999":1458175} passed=true
+# 2026-10-27 write_1t host-container ops/s=4365.5 latency_ns={"avg":228884.86095521704,"count":8731,"max":800821,"min":161343,"p50":227327,"p99":288767,"p999":356351} passed=true
+# 2026-10-27 write_64t host-container ops/s=108350.0 latency_ns={"avg":590196.4161744347,"count":216700,"max":2162980,"min":270383,"p50":573439,"p99":974847,"p999":1662975} passed=true

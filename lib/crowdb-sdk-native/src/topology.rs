@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use crowdb_chunk_kv_client::ChunkKvRangeCatalogMap;
 use crowdb_diskio_client::DiskTopologyView;
-use crowdb_kv_client::ServiceRegistryClient;
+use crowdb_paxos_kv_client::ServiceRegistryClient;
 use crowdb_protocol::common::InstanceValue;
 
 use crate::error::{TopologyFailureKind, TopologySource};

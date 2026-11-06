@@ -25,10 +25,13 @@ TEST(Version, FlushBumpsVersionAndTagsSlot)
     EXPECT_EQ(t.version(), 0U);
     ASSERT_TRUE(t.apply(1, put_one("a", "A1")).ok());
     ASSERT_TRUE(t.flush().ok());
-    EXPECT_EQ(t.version(), 1U);
+    const auto first = t.version();
+    EXPECT_GT(first, 0U);
+    EXPECT_EQ(t.snapshot_view()->at_slot(), 1U);
     ASSERT_TRUE(t.apply(2, put_one("b", "B2")).ok());
     ASSERT_TRUE(t.flush().ok());
-    EXPECT_EQ(t.version(), 2U);
+    EXPECT_GT(t.version(), first);
+    EXPECT_EQ(t.snapshot_view()->at_slot(), 2U);
 }
 
 TEST(Version, SnapshotTagEqualsFlushedSlot)

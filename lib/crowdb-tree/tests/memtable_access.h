@@ -1,68 +1,81 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 #pragma once
-
-#include "crowdb-tree/crowdb-tree.h"
-
+#include "runtime_tree_access.h"
+#include "snapshot/operation_wait.h"
 #ifdef CROWDB_TREE_TEST_UTIL
 namespace crowdb::tree
 {
-// Deterministic access to the production capture/publication boundaries.
 struct MemTableAccess_for_tests
 {
-    static auto admit(Crowdbtree &tree)
+    struct Capture
     {
-        return tree.admit_batch();
-    }
+        std::shared_ptr<FlushOperation> operation;
+        uint64_t                        frontier = 0;
+        SourceCatalog::Tables           tables;
+    };
 
-    static auto capture(Crowdbtree &tree)
+    struct Receiver
     {
-        return tree.capture_flush_locked();
-    }
+        using receiver_concept = stdexec::receiver_tag;
+        detail::SnapshotWaitCompletion *done;
 
-    static auto sources(Crowdbtree &tree)
+        void set_value(FlushResult report) const noexcept
+        {
+            set_error(report.handoff_status);
+        }
+
+        void set_error(Status status) const noexcept
+        {
+            done->status = std::move(status);
+            done->done.signal();
+        }
+
+        void set_stopped() const noexcept
+        {
+            set_error(Status::unavailable());
+        }
+    };
+
+    static Capture capture(Crowdbtree &tree)
     {
-        return tree.all_memtables();
+        Capture result;
+        auto    status = RuntimeTreeAccess_for_tests::core(tree).prepare_flush(&result.operation);
+        if (!status.ok()) {
+            throw std::runtime_error(status.to_string());
+        }
+        detail::SnapshotWaitCompletion done;
+        auto operation = stdexec::connect(result.operation->capture_sender(), Receiver{&done});
+        stdexec::start(operation);
+        done.done.wait();
+        if (!done.status.ok()) {
+            throw std::runtime_error(done.status.to_string());
+        }
+        auto frozen = result.operation->frozen_sources();
+        if (!frozen.catalog) {
+            throw std::runtime_error("capture requested without a materializable contiguous frontier");
+        }
+        result.frontier = frozen.frontier;
+        result.tables.assign(frozen.catalog->tables.begin(), frozen.catalog->tables.end());
+        return result;
     }
 
     static auto active(Crowdbtree &tree)
     {
-        return tree.current_active();
+        return RuntimeTreeAccess_for_tests::capture(tree)->sources->tables.back();
     }
 
-    static auto &counters(Crowdbtree &tree)
+    static auto sources(Crowdbtree &tree)
     {
-        return tree.memtable_counters_;
+        return RuntimeTreeAccess_for_tests::capture(tree)->sources->tables;
     }
 
-    static auto copy_latency(Crowdbtree &tree)
+    static void publish([[maybe_unused]] Crowdbtree &tree, Capture &capture)
     {
-        return tree.metrics_.mt_version_copy_l;
-    }
-
-    static auto &epoch(Crowdbtree &tree)
-    {
-        return tree.epoch_;
-    }
-
-    static bool replacing(Crowdbtree &tree)
-    {
-        return tree.generation_.closed_for_tests();
-    }
-
-    static void fail_publication(Crowdbtree &tree, void (*hook)())
-    {
-        tree.after_flush_group_for_tests_ = hook;
-    }
-
-    static void finish(Crowdbtree &tree, uint64_t slot)
-    {
-        tree.note_applied_slot(slot);
-    }
-
-    static void publish(Crowdbtree &tree, Crowdbtree::FlushBoundary &boundary)
-    {
-        tree.publish_flush_locked(boundary);
+        auto status = detail::wait_snapshot_operation(capture.operation);
+        if (!status.ok()) {
+            throw std::runtime_error(status.to_string());
+        }
     }
 };
 } // namespace crowdb::tree

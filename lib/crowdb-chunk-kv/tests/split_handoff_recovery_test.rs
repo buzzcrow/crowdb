@@ -27,7 +27,7 @@ fn put(key: &[u8], value: &[u8]) -> MutationOperation {
     }
 }
 
-async fn recover_after_handoff(child_has_write: bool, checkpoint_after_dispatch: bool) {
+async fn recover_after_handoff(child_has_write: bool, checkpoint_after_dispatch: bool, native: bool) {
     let storage = TestSplitStorage::new();
     let parent_id = PartitionId { high: 50, low: 1 };
     let child_id = PartitionId { high: 51, low: 1 };
@@ -76,28 +76,7 @@ async fn recover_after_handoff(child_has_write: bool, checkpoint_after_dispatch:
         .await
         .unwrap();
     if child_has_write {
-        let live_tree = Arc::new(MemoryPartitionTree::with_tree_id(51));
-        live_tree.advance_noop(3).await.unwrap();
-        let child = Partition::open(
-            child_id,
-            child_range,
-            1,
-            PartitionConfig::default(),
-            live_tree,
-            child_journal.clone(),
-        )
-        .unwrap();
-        child
-            .mutate(1, request(4), put(b"n", b"child-tail"))
-            .await
-            .unwrap();
-        // Parent and child sequences diverge after dispatch. The parent's
-        // later sequence 4 must not move the inherited child frontier to 4.
-        parent
-            .mutate(1, request(5), put(b"d", b"later-left"))
-            .await
-            .unwrap();
-        drop(child);
+        write_child_tail(&parent, child_id, child_range, child_journal.clone()).await;
     }
     if checkpoint_after_dispatch {
         let (checkpoint, tree) =
@@ -106,7 +85,19 @@ async fn recover_after_handoff(child_has_write: bool, checkpoint_after_dispatch:
         cold_parent_tree = tree;
     }
     drop(parent);
-    let cold_tree = Arc::new(MemoryPartitionTree::with_tree_id(51));
+    if native {
+        assert!(!checkpoint_after_dispatch);
+        let native_parent = native_tree(50);
+        native_parent.apply(1, &put(b"b", b"base-left")).await.unwrap();
+        native_parent.checkpoint(0).await.unwrap();
+        assert_eq!(native_parent.checkpoint_state().unwrap(), (1, 1));
+        cold_parent_tree = native_parent;
+    }
+    let cold_tree: Arc<dyn PartitionTree> = if native {
+        native_tree(51)
+    } else {
+        Arc::new(MemoryPartitionTree::with_tree_id(51))
+    };
     cold_tree.advance_noop(1).await.unwrap();
     cold_tree.checkpoint(0).await.unwrap();
     let (recovered, artifact) = Partition::recover_split_handoff(
@@ -118,7 +109,7 @@ async fn recover_after_handoff(child_has_write: bool, checkpoint_after_dispatch:
     )
     .await
     .unwrap();
-    verify_recovery(&recovered, &artifact, &cold_tree, child_has_write).await;
+    verify_recovery(&recovered, &artifact, cold_tree.as_ref(), child_has_write).await;
     verify_restored_dispatch(
         recovered,
         artifact,
@@ -127,6 +118,36 @@ async fn recover_after_handoff(child_has_write: bool, checkpoint_after_dispatch:
         source_checkpoint,
     )
     .await;
+}
+
+async fn write_child_tail(
+    parent: &Partition,
+    child_id: PartitionId,
+    child_range: PartitionRange,
+    child_journal: Arc<dyn crowdb_chunk_kv::PartitionJournal>,
+) {
+    let live_tree = Arc::new(MemoryPartitionTree::with_tree_id(51));
+    live_tree.advance_noop(3).await.unwrap();
+    let child = Partition::open(
+        child_id,
+        child_range,
+        1,
+        PartitionConfig::default(),
+        live_tree,
+        child_journal,
+    )
+    .unwrap();
+    child
+        .mutate(1, request(4), put(b"n", b"child-tail"))
+        .await
+        .unwrap();
+    // Parent and child sequences diverge after dispatch. The parent's
+    // later sequence 4 must not move the inherited child frontier to 4.
+    parent
+        .mutate(1, request(5), put(b"d", b"later-left"))
+        .await
+        .unwrap();
+    drop(child);
 }
 
 async fn verify_restored_dispatch(
@@ -191,7 +212,7 @@ async fn verify_restored_dispatch(
 async fn verify_recovery(
     recovered: &Partition,
     artifact: &PreparedSplitWriterArtifact,
-    cold_tree: &MemoryPartitionTree,
+    cold_tree: &dyn PartitionTree,
     child_has_write: bool,
 ) {
     assert_eq!(artifact.applied_seq, 3);
@@ -215,17 +236,17 @@ async fn verify_recovery(
 
 #[tokio::test]
 async fn status_committed_before_dispatch_recovers_parent_suffix() {
-    recover_after_handoff(false, false).await;
+    recover_after_handoff(false, false, false).await;
 }
 
 #[tokio::test]
 async fn child_wal_identifies_inherited_frontier_and_replays_after_parent() {
-    recover_after_handoff(true, false).await;
+    recover_after_handoff(true, false, false).await;
 }
 
 #[tokio::test]
 async fn recovered_parent_checkpoint_can_be_ahead_of_child_inherited_frontier() {
-    recover_after_handoff(true, true).await;
+    recover_after_handoff(true, true, false).await;
 }
 
 async fn checkpoint_source_after_dispatch(
@@ -257,4 +278,22 @@ fn source_checkpoint_at_base(
         stream_generation: journal.record_generation(),
         replay_offset: base_offset,
     }
+}
+
+fn native_tree(id: u64) -> Arc<dyn PartitionTree> {
+    Arc::new(
+        crowdb_chunk_kv::CrowdbPartitionTree::open(
+            id,
+            &crowdb_tree_ffi::Config {
+                page_store: Some(Arc::new(crowdb_tree_ffi::PageStore::open_mem(65_536).unwrap())),
+                ..crowdb_tree_ffi::Config::default()
+            },
+        )
+        .unwrap(),
+    )
+}
+
+#[tokio::test]
+async fn native_replayed_child_wal_resumes_without_reinstalling_parent_overlay() {
+    recover_after_handoff(true, false, true).await;
 }

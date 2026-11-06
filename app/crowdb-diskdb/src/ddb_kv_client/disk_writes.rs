@@ -42,7 +42,7 @@ impl DdbKvClient {
                 .filter_map(disk_id)
                 .any(|id| !disks.iter().any(|disk| disk.disk_id == id))
         {
-            return Err(crowdb_kv_client::Error::Server(
+            return Err(crowdb_paxos_kv_client::Error::Server(
                 "disk is absent from the captured membership".into(),
             ));
         }
@@ -58,7 +58,7 @@ impl DdbKvClient {
                     for permit in permits {
                         permit.complete();
                     }
-                    return Err(crowdb_kv_client::Error::Server(
+                    return Err(crowdb_paxos_kv_client::Error::Server(
                         "disk is administratively excluded; metadata write rejected".into(),
                     ));
                 };

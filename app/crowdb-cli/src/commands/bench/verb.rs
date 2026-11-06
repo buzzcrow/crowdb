@@ -13,9 +13,8 @@ use crate::Cli;
 /// Workloads attached to a selected application cluster.
 #[derive(Subcommand, Debug)]
 pub enum BenchVerb {
-    /// KV-layer workload (prepare / read / write / scan).
-    #[command(subcommand)]
-    Kv(KvBenchVerb),
+    /// Load an already running three-container Paxos-KV deployment.
+    PaxosKv(super::paxos_kv::args::PaxosKvArgs),
     /// Distributed disk-block allocation benchmark.
     #[command(subcommand)]
     Diskdb(DiskdbBenchVerb),
@@ -290,191 +289,12 @@ pub struct DiskdbArgs {
     pub metrics_interval: u64,
 }
 
-#[derive(Subcommand, Debug)]
-pub enum KvBenchVerb {
-    /// Pre-populate `--keys` keys into store 0 / group 0.
-    Prepare(PrepareArgs),
-    /// Point-get workload.
-    Read(ReadArgs),
-    /// Put workload.
-    Write(WriteArgs),
-    /// Scan (list) workload.
-    Scan(ScanArgs),
-}
-
-#[derive(clap::Args, Debug)]
-pub struct PrepareArgs {
-    /// Number of keys to write into the target store/group.
-    #[arg(long, default_value_t = 100_000)]
-    pub keys: u64,
-    /// Value size in bytes.
-    #[arg(long, default_value_t = 64)]
-    pub value_size: usize,
-    /// Concurrent put tasks.
-    #[arg(long, default_value_t = 16)]
-    pub concurrency: usize,
-    /// Target store ID (default 0 = system store).
-    #[arg(long, default_value_t = 0)]
-    pub store: u64,
-    /// Target group ID (default 0 = system group; use 1+ for bench groups).
-    #[arg(long, default_value_t = 0)]
-    pub group: u64,
-}
-
-#[derive(clap::Args, Debug)]
-pub struct ReadArgs {
-    #[arg(long, default_value_t = 10)]
-    pub duration_secs: u64,
-    #[arg(long, default_value_t = 1)]
-    pub loader_num: usize,
-    #[arg(long, default_value_t = 1)]
-    pub connections: usize,
-    /// Read consistency: `linearizable` (lease barrier) or `minslot`.
-    #[arg(long, value_enum, default_value_t = BenchReadMode::Linearizable)]
-    pub read_mode: BenchReadMode,
-    /// `MinSlot` lower bound: `auto` (client high-watermark) or `zero`.
-    #[arg(long, value_enum, default_value_t = BenchMinSlot::Auto)]
-    pub min_slot: BenchMinSlot,
-    /// `MinSlot` endpoint selection: `leader` or `any-replica`.
-    #[arg(long, value_enum, default_value_t = BenchReadEndpoint::Leader)]
-    pub read_endpoint_policy: BenchReadEndpoint,
-    /// Keyspace size (keys are `k{id:020}`, id in `[0, key_space)`).
-    #[arg(long, default_value_t = 100_000)]
-    pub key_space: u64,
-    /// Value size in bytes (for correctness verification).
-    #[arg(long, default_value_t = 64)]
-    pub value_size: usize,
-    /// Verify the first N value bytes match the expected pattern
-    /// (`0..N` mod 256). 0 disables verification.
-    #[arg(long, default_value_t = 0)]
-    pub verify_bytes: usize,
-    /// Metrics flush interval in seconds. 0 disables the metrics log.
-    #[arg(long, default_value_t = 1)]
-    pub metrics_interval: u64,
-    /// Target store ID (default 0 = system store).
-    #[arg(long, default_value_t = 0)]
-    pub store: u64,
-    /// Target group ID (default 0 = system group; use 1+ for bench groups).
-    #[arg(long, default_value_t = 0)]
-    pub group: u64,
-}
-
-#[derive(clap::Args, Debug)]
-pub struct WriteArgs {
-    #[arg(long, default_value_t = 10)]
-    pub duration_secs: u64,
-    #[arg(long, default_value_t = 1)]
-    pub loader_num: usize,
-    #[arg(long, default_value_t = 1)]
-    pub connections: usize,
-    #[arg(long, default_value_t = 1_000_000)]
-    pub key_space: u64,
-    #[arg(long, default_value_t = 512)]
-    pub value_size: usize,
-    #[arg(long, default_value_t = 0)]
-    pub verify_bytes: usize,
-    /// Client transport: event-write mode (coalesce frames via I/O worker).
-    #[arg(long, default_value_t = false)]
-    pub event_write: bool,
-    /// Client transport: I/O worker threads (match server --rpc-workers).
-    #[arg(long, default_value_t = 2)]
-    pub rpc_workers: u32,
-    /// Client transport: per-connection send queue capacity. 0 = default (4096).
-    #[arg(long, default_value_t = 0)]
-    pub send_queue_capacity: u32,
-    /// Metrics flush interval in seconds. 0 disables the metrics log.
-    #[arg(long, default_value_t = 1)]
-    pub metrics_interval: u64,
-    /// Target store ID (default 0 = system store).
-    #[arg(long, default_value_t = 0)]
-    pub store: u64,
-    /// Target group ID (default 0 = system group; use 1+ for bench groups).
-    #[arg(long, default_value_t = 0)]
-    pub group: u64,
-}
-
-#[derive(clap::Args, Debug)]
-pub struct ScanArgs {
-    #[arg(long, default_value_t = 10)]
-    pub duration_secs: u64,
-    #[arg(long, default_value_t = 1)]
-    pub loader_num: usize,
-    #[arg(long, default_value_t = 1)]
-    pub connections: usize,
-    #[arg(long, value_enum, default_value_t = BenchReadMode::Linearizable)]
-    pub read_mode: BenchReadMode,
-    #[arg(long, value_enum, default_value_t = BenchMinSlot::Auto)]
-    pub min_slot: BenchMinSlot,
-    #[arg(long, value_enum, default_value_t = BenchReadEndpoint::Leader)]
-    pub read_endpoint_policy: BenchReadEndpoint,
-    /// Maximum items per scan request.
-    #[arg(long, default_value_t = 1000)]
-    pub scan_limit: u32,
-    /// Prefix filter (empty = no prefix).
-    #[arg(long, default_value = "")]
-    pub scan_prefix: String,
-    /// Exclusive lower bound (empty = start from beginning).
-    #[arg(long, default_value = "")]
-    pub scan_start_after: String,
-    /// Scan traversal direction.
-    #[arg(long, value_enum, default_value_t = BenchScanDirection::Forward)]
-    pub scan_direction: BenchScanDirection,
-    #[arg(long, default_value_t = 64)]
-    pub value_size: usize,
-    #[arg(long, default_value_t = 100_000)]
-    pub key_space: u64,
-    #[arg(long, default_value_t = 0)]
-    pub verify_bytes: usize,
-    /// Mixed value-size distribution, e.g. `64:70,1024:20,16384:10`
-    /// (size:percent). When set, overrides `--value-size`.
-    #[arg(long)]
-    pub value_size_mix: Option<String>,
-    /// Metrics flush interval in seconds. 0 disables the metrics log.
-    #[arg(long, default_value_t = 1)]
-    pub metrics_interval: u64,
-    /// Target store ID (default 0 = system store).
-    #[arg(long, default_value_t = 0)]
-    pub store: u64,
-    /// Target group ID (default 0 = system group; use 1+ for bench groups).
-    #[arg(long, default_value_t = 0)]
-    pub group: u64,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-pub enum BenchReadMode {
-    Linearizable,
-    Minslot,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-pub enum BenchMinSlot {
-    Auto,
-    Zero,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-pub enum BenchReadEndpoint {
-    Leader,
-    AnyReplica,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-pub enum BenchScanDirection {
-    Forward,
-    Reverse,
-}
-
 pub async fn run_bench_verb(cli: &Cli, verb: BenchVerb) -> ExitCode {
     match verb {
         BenchVerb::Diskdb(verb) => super::disk::db::run(cli, verb).await,
         BenchVerb::Chunkdb(verb) => super::chunk::run(cli, verb).await,
         BenchVerb::Chunkio(verb) => super::io::run(cli, verb).await,
         BenchVerb::S3(verb) => super::s3::run(cli, verb).await,
-        BenchVerb::Kv(kv) => match kv {
-            KvBenchVerb::Prepare(args) => super::kv::prepare::run(cli, args).await,
-            KvBenchVerb::Read(args) => super::kv::read::run(cli, args).await,
-            KvBenchVerb::Write(args) => super::kv::write::run(cli, args).await,
-            KvBenchVerb::Scan(args) => super::kv::scan::run(cli, args).await,
-        },
+        BenchVerb::PaxosKv(args) => super::paxos_kv::run(cli, args).await,
     }
 }

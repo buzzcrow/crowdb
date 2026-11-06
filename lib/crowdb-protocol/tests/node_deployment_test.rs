@@ -23,9 +23,8 @@ fn fresh_local_policy_has_one_voter_and_all_public_access_listeners() {
     ));
     assert!(policy.setup.services.iter().all(|service| service.enabled));
     let diskdb = &policy.setup.services[1].listeners;
-    assert_eq!(diskdb.listen_port, Some(11000));
-    assert_eq!(diskdb.http_port, Some(11100));
-    assert_eq!(diskdb.rpc_port, Some(11200));
+    assert_eq!(diskdb.http_port, Some(crowdb_protocol::DISKDB_HTTP_BASE));
+    assert_eq!(diskdb.rpc_port, Some(crowdb_protocol::DISKDB_RPC_BASE));
     let access = policy
         .setup
         .services
@@ -198,11 +197,16 @@ fn invalid_policies_are_rejected_before_any_resolution_can_replace_them() {
             .is_err());
     }
     let mut duplicate_port = valid;
-    duplicate_port.setup.services[5].listeners.dataset_port = Some(ACCESS_SERVER_ICEBERG_HTTP_BASE);
+    duplicate_port.setup.services[5].listeners.dataset_port =
+        Some(crowdb_protocol::ACCESS_SERVER_ICEBERG_HTTP_BASE);
     assert!(duplicate_port.validate().is_err());
     duplicate_port.setup.services[5].listeners.dataset_port = None;
     assert!(duplicate_port.validate().is_err());
-    for reserved in [2222, 9090, 9095] {
+    for reserved in [
+        crowdb_protocol::SSH_PORT,
+        crowdb_protocol::WEB_BASE,
+        crowdb_protocol::MONITOR_HTTP_BASE,
+    ] {
         let mut policy = NodeDeploymentPolicy::default();
         policy.setup.services[5].listeners.dataset_port = Some(reserved);
         assert!(policy.validate().is_err());

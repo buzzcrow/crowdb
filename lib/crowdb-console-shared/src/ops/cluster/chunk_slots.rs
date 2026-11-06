@@ -29,7 +29,7 @@ pub(super) async fn initialize(ctx: &OpContext, config: &LocalChunkdbDeployConfi
             })
             .collect(),
     };
-    let maps = crowdb_kv_client::ChunkSlotMapClient::new(Arc::clone(ctx.kv_arc()));
+    let maps = crowdb_paxos_kv_client::ChunkSlotMapClient::new(Arc::clone(ctx.kv_arc()));
     maps.initialize_layout(&bootstrap).await?;
     if config.dynamic_ownership {
         maps.initialize_service_epochs().await?;

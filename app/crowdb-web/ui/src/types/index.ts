@@ -86,7 +86,7 @@ export interface NodeStore {
 }
 
 // Batched crowdb-tree engine diagnostics (doc/todo-sm.md Step 6); mirrors
-// crowdb-kv's `CrowdbTreeStatsView`. Present only when the group's engine is
+// crowdb-paxos-kv's `CrowdbTreeStatsView`. Present only when the group's engine is
 // `CrowdbTreeEngine` (absent/undefined for `InMemKV`).
 export interface CrowdbTreeStats {
   last_applied_slot: number;
@@ -257,7 +257,7 @@ export interface ApiError {
   details?: any;
 }
 
-// Election/lease state (mirrors crowdb-kv's ElectionStateView)
+// Election/lease state (mirrors crowdb-paxos-kv's ElectionStateView)
 export interface ElectionState {
   election_count?: number;
   current_term: number;
@@ -269,7 +269,7 @@ export interface ElectionState {
   step_downs_admin?: number;
 }
 
-// Read-path state gauges (mirrors crowdb-kv's ReadStateView)
+// Read-path state gauges (mirrors crowdb-paxos-kv's ReadStateView)
 export interface ReadState {
   lease_valid: number;
   contiguous_applied: number;

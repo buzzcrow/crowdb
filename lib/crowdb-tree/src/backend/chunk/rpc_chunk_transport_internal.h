@@ -89,9 +89,7 @@ inline Status call_rpc(const ct_chunk_rpc_route &route, uint64_t request_id, uin
         return submit == CROWDB_RPC_ERR_SEND_QUEUE ? Status::resource_exhausted("chunk RPC submission queue is full")
                                                    : Status::unavailable("chunk RPC submission failed");
     }
-    while (!state.done.load(std::memory_order_acquire)) {
-        state.done.wait(false, std::memory_order_acquire);
-    }
+    state.done.wait();
     *out = std::move(state.result);
     return out->status == CROWDB_RPC_OK ? Status::Ok() : Status::unavailable("chunk RPC call failed");
 }
@@ -114,6 +112,8 @@ inline Status chunkdb_status(FBChunkdbRetCode code, const flatbuffers::String *e
     switch (code) {
     case FBChunkdbRetCode_Success:
         return Status::Ok();
+    case crowdb::chunkdb::proto::FBChunkdbRetCode_NotFound:
+        return Status::not_found(message);
     case FBChunkdbRetCode_InvalidArgument:
     case FBChunkdbRetCode_FailedPrecondition:
     case FBChunkdbRetCode_StripIndexOutOfRange:
@@ -267,7 +267,7 @@ struct RpcChunkTransport::Impl
         return status;
     }
 
-    uint64_t next_request_id() const
+    [[nodiscard]] uint64_t next_request_id() const
     {
         return request_ids.fetch_add(1, std::memory_order_relaxed);
     }
@@ -372,6 +372,18 @@ struct RpcChunkTransport::Impl
                 }
                 *found = chunk;
             }
+            if (chunks.compare_exchange_weak(current, next, std::memory_order_release, std::memory_order_acquire)) {
+                return;
+            }
+        }
+    }
+
+    void forget(ChunkId id) const
+    {
+        auto current = chunks.load(std::memory_order_acquire);
+        while (current != nullptr) {
+            auto next = std::make_shared<RemoteChunks>(*current);
+            std::erase_if(*next, [id](const RemoteChunk &entry) { return entry.layout.chunk_id == id; });
             if (chunks.compare_exchange_weak(current, next, std::memory_order_release, std::memory_order_acquire)) {
                 return;
             }

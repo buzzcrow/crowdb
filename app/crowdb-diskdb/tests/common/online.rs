@@ -7,7 +7,7 @@ use crowdb_diskdb::{
     liveness::keepalive::KeepAlive,
     model::{disk::DdbDisk, disk_group_container::DdbDiskGroupContainer},
 };
-use crowdb_kv_client::HardwareClient;
+use crowdb_paxos_kv_client::HardwareClient;
 use crowdb_protocol::{
     common::{DiskId, DiskioHardwareScope, HwStatus, NodeValue, RackValue},
     disk_storage::{DiskExclusionRecord, DiskExclusionReporter, DiskOnlineState, DiskStorageRecord},

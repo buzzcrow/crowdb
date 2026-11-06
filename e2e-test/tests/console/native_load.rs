@@ -6,7 +6,7 @@ use crowdb_chunk_kv_client::{
     BatchItem, ChunkKvClient, ChunkKvRangeCatalogMap, ChunkKvRangeCatalogSource, ChunkKvRpcTransport,
     ClientConfig, Group0ChunkKvRangeCatalogSource,
 };
-use crowdb_kv_client::ServiceRegistryClient;
+use crowdb_paxos_kv_client::ServiceRegistryClient;
 use crowdb_protocol::chunk_kv::{ChunkKvInstanceObservation, OperationResult, PointOperation};
 use reqwest::Method;
 use std::{
@@ -63,9 +63,13 @@ async fn verify(context: &TestNativeContext) {
         retained >= 4 * 1024 * 1024,
         "32 MiB incompressible data must not report negligible retained bytes: {after:?}"
     );
+    // A 64-KiB value plus its cell header spans two overflow frames. Each
+    // frame can own a 1-MiB allocation with two mirrors. Include root/mapping
+    // packs as well: this observation reports allocated storage and padding.
+    let retained_bound = 512 * 4 * 1024 * 1024 + 32 * 1024 * 1024;
     assert!(
-        retained <= 256 * 1024 * 1024,
-        "advisory retained estimate must remain within pack padding scale: {after:?}"
+        retained <= retained_bound,
+        "advisory retained estimate exceeds page pack padding: {after:?}"
     );
     let (head, pages) = source.load().await.unwrap();
     let catalog = ChunkKvRangeCatalogMap::decode(&head, &pages).unwrap();

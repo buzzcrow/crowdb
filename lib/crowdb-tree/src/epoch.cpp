@@ -1,8 +1,10 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-#include "crowdb-tree/epoch.h"
+#include "btree/retired_shared.h"
+#include "epoch_internal.h"
 
+#include <array>
 #include <utility>
 #include <vector>
 
@@ -11,47 +13,82 @@ namespace crowdb::tree
 
 namespace
 {
-// Monotonic id source so a thread's per-manager cache keys never collide, even
-// if a manager's heap address is reused after destruction.
-std::atomic<uint64_t> g_epoch_mgr_id{1};
+// Stable thread identities survive eviction from the fixed participant cache.
+std::atomic<uint64_t> g_epoch_thread_id{1};
 } // namespace
 
 // ── Reader hot path (lock-free) ───────────────────────────────────
 
-EpochManager::Participant *EpochManager::participant_for_this_thread()
+EpochManager::Participant *EpochManager::participant_for_this_thread(const std::shared_ptr<AllocationBudget> &budget)
 {
-    // Process-global per-thread cache of (manager id -> this thread's slot). A
-    // thread that touches several managers keeps one entry each; entries for a
-    // destroyed manager (unique id) are simply never matched again.
-    static thread_local std::vector<std::pair<uint64_t, Participant *>> cache;
+    // New reads of an immutable source need only its retained table owner.
+    // Guards accepted before the seal still exit their original participant.
+    if (source_sealed()) {
+        return nullptr;
+    }
+    // Fixed TLS storage cannot grow with the number of retired MemTables. A
+    // cache miss searches the manager's immutable list before allocating, so
+    // evicting an active nested guard's cache entry cannot create a second slot.
+    static thread_local std::array<std::pair<uint64_t, Participant *>, 32> cache{};
+    static thread_local size_t                                             replacement = 0;
+    static thread_local const uint64_t thread_id = g_epoch_thread_id.fetch_add(1, std::memory_order_relaxed);
     for (auto &e : cache) {
         if (e.first == id_) {
             return e.second;
         }
     }
-    // First use on this thread: allocate our slot and push it (lock-free) onto the
-    // manager's participant list. The node lives until the manager is destroyed.
-    auto        *p    = new Participant();
-    Participant *head = participants_.load(std::memory_order_relaxed);
-    do {
-        p->next = head;
-    } while (!participants_.compare_exchange_weak(head, p, std::memory_order_release, std::memory_order_relaxed));
-    cache.emplace_back(id_, p);
+    auto &participants = lifetime_->queue ? lifetime_->live_participants : participants_;
+    for (auto *p = participants.load(std::memory_order_acquire); p != nullptr; p = p->next) {
+        if (p->thread_id == thread_id) {
+            cache[replacement++ % cache.size()] = {id_, p};
+            return p;
+        }
+    }
+    if (participants.sealed()) {
+        return nullptr;
+    }
+    MetadataAllocator<Participant> allocator(budget ? budget : budget_);
+    auto                          *p = allocator.allocate(1);
+    std::construct_at(p);
+    p->thread_id    = thread_id;
+    p->budget       = allocator.owner();
+    const auto head = participants.registration_head();
+#ifdef CROWDB_TREE_TEST_UTIL
+    if (append_hook_ != nullptr) {
+        append_hook_(append_context_);
+    }
+#endif
+    if (!participants.push(p, head)) {
+        destroy_participant(p);
+        return nullptr;
+    }
+    cache[replacement++ % cache.size()] = {id_, p};
     return p;
 }
 
-EpochManager::Guard EpochManager::enter()
+EpochManager::Guard EpochManager::enter(std::shared_ptr<AllocationBudget> budget)
 {
-    Participant *p = participant_for_this_thread();
+    Participant *p = participant_for_this_thread(budget);
+    if (p == nullptr) {
+        return {};
+    }
     // Reentrant: only the outermost enter publishes the entry epoch.
     if (p->nest++ == 0) {
         // seq_cst pair: publish our entry epoch before any subsequent shared load,
         // so a concurrent reclaimer either sees this epoch (keeps the object) or we
         // see its swapped-in mapping (never touch the retired object).
-        uint64_t e = global_epoch_.load(std::memory_order_seq_cst);
+        auto    &epoch = lifetime_->queue ? lifetime_->live_epoch : global_epoch_;
+        uint64_t e     = epoch.load(std::memory_order_seq_cst);
         p->local_epoch.store(e, std::memory_order_seq_cst);
     }
     return Guard(p, lifetime_);
+}
+
+void EpochManager::destroy_participant(Participant *participant) noexcept
+{
+    MetadataAllocator<Participant> allocator(participant->budget);
+    std::destroy_at(participant);
+    allocator.deallocate(participant, 1);
 }
 
 void EpochManager::Guard::release()
@@ -61,6 +98,9 @@ void EpochManager::Guard::release()
         // a plain field. No reclamation here — that is writer-driven.
         if (--p_->nest == 0) {
             p_->local_epoch.store(0, std::memory_order_release);
+            if (lifetime_) {
+                lifetime_->request_collect();
+            }
         }
         p_ = nullptr;
     }
@@ -68,43 +108,14 @@ void EpochManager::Guard::release()
 
 // ── Writer side (reclaim_mu_) ─────────────────────────────────────
 
-// Detached borrows may outlive their manager. Once detached, no producer can
-// enqueue further work; the last guard owns the remaining reclamation batch.
-struct EpochManager::Lifetime
-{
-    Participant         *participants = nullptr;
-    Deferred            *pending      = nullptr;
-    Deferred            *collected    = nullptr;
-    std::vector<Retired> retired;
-
-    ~Lifetime()
-    {
-        for (auto *head : {pending, collected}) {
-            while (head != nullptr) {
-                auto *next = head->next;
-                head->destroy(head);
-                head = next;
-            }
-        }
-        for (auto &entry : retired) {
-            entry.deleter(entry.ptr);
-        }
-        while (participants != nullptr) {
-            auto *next = participants->next;
-            delete participants;
-            participants = next;
-        }
-    }
-};
-
-EpochManager::EpochManager()
-    : lifetime_(std::make_shared<Lifetime>()),
-      id_(g_epoch_mgr_id.fetch_add(1, std::memory_order_relaxed))
-{
-}
-
 EpochManager::~EpochManager()
 {
+    if (!lifetime_) {
+        return;
+    }
+    if (lifetime_->queue) {
+        return;
+    }
     if (active_guards() != 0) {
         lifetime_->participants = participants_.exchange(nullptr);
         lifetime_->pending      = deferred_.exchange(nullptr);
@@ -113,8 +124,8 @@ EpochManager::~EpochManager()
         return;
     }
 
-    // By destruction time no guards must remain. Free anything still pending, then
-    // free the participant nodes. Drain in a loop (not once): a deleter can
+    // By destruction time no guards must remain. Free anything still pending,
+    // then free the participant nodes. Drain in a loop (not once): a deleter can
     // retire something else on this same manager (see reclaim_locked()'s doc
     // comment), which re-populates retired_ -- keep detaching+running until
     // nothing's left, so a nested retirement's deleter still runs instead of
@@ -130,7 +141,7 @@ EpochManager::~EpochManager()
                     r.deleter(r.ptr);
                 }
                 catch (...) { // NOLINT(bugprone-empty-catch)
-                    // Destructors must not throw; swallow deleter exceptions.
+                              // Destructors must not throw; swallow deleter exceptions.
                 }
             }
         }
@@ -138,15 +149,15 @@ EpochManager::~EpochManager()
     Participant *p = participants_.load(std::memory_order_acquire);
     while (p != nullptr) {
         Participant *next = p->next;
-        delete p;
+        destroy_participant(p);
         p = next;
     }
 }
 
 uint64_t EpochManager::min_active_epoch()
 {
-    // Oldest epoch any active reader might still be inside. seq_cst loads pair with
-    // enter()'s publish for the total-order argument above.
+    // Oldest epoch any active reader might still be inside. seq_cst loads pair
+    // with enter()'s publish for the total-order argument above.
     uint64_t min_active = global_epoch_.load(std::memory_order_seq_cst);
     for (Participant *p = participants_.load(std::memory_order_acquire); p != nullptr; p = p->next) {
         uint64_t e = p->local_epoch.load(std::memory_order_seq_cst);
@@ -159,6 +170,30 @@ uint64_t EpochManager::min_active_epoch()
 
 void EpochManager::retire(void *ptr, Deleter deleter)
 {
+    if (lifetime_ && lifetime_->queue) {
+        struct Callback : Deferred
+        {
+            void                             *value;
+            Deleter                           deleter;
+            std::shared_ptr<AllocationBudget> budget;
+        };
+
+        MetadataAllocator<Callback> allocator(budget_);
+        auto                       *callback = allocator.allocate(1);
+        std::construct_at(callback);
+        callback->value   = ptr;
+        callback->deleter = std::move(deleter);
+        callback->budget  = budget_;
+        callback->destroy = [](Deferred *entry) noexcept {
+            auto                       *callback = static_cast<Callback *>(entry);
+            MetadataAllocator<Callback> allocator(callback->budget);
+            callback->deleter(callback->value);
+            std::destroy_at(callback);
+            allocator.deallocate(callback, 1);
+        };
+        lifetime_->defer(callback);
+        return;
+    }
     std::scoped_lock lk(reclaim_mu_);
     // New retirements belong to the current epoch; bump so a fresh guard entering
     // after this cannot claim to predate the retirement.
@@ -173,9 +208,7 @@ size_t EpochManager::reclaim_locked()
     uint64_t min_active = min_active_epoch();
     // Detach the current retired list *before* running any deleter: a
     // deleter can legitimately call retire() again on this same manager
-    // (e.g. retire_orphaned_page's deferred mapping_.clear() recycling its
-    // now-empty MappingSegment via epoch.retire_object(seg)) -- reclaim_mu_
-    // being recursive lets that nested call proceed on the same thread, but
+    // -- reclaim_mu_ being recursive permits same-thread re-entry, but
     // it would still corrupt an in-progress `for (auto &r : retired_)` (the
     // nested call's own push_back/swap reallocates or replaces the very
     // vector this loop is iterating). Iterating a local, already-swapped-out
@@ -199,12 +232,20 @@ size_t EpochManager::reclaim_locked()
 
 size_t EpochManager::try_reclaim()
 {
+    if (lifetime_ && lifetime_->queue) {
+        const auto before = lifetime_->freed_count.load(std::memory_order_relaxed);
+        lifetime_->request_collect();
+        return lifetime_->freed_count.load(std::memory_order_relaxed) - before;
+    }
     std::scoped_lock lk(reclaim_mu_);
     return reclaim_deferred_locked() + reclaim_locked();
 }
 
 size_t EpochManager::pending_retired()
 {
+    if (lifetime_ && lifetime_->queue) {
+        return lifetime_->pending_count.load(std::memory_order_relaxed);
+    }
     std::scoped_lock lk(reclaim_mu_);
     size_t           count = retired_.size();
     // Diagnostic snapshot; tickets can only be reclaimed while this lock is held.
@@ -219,6 +260,10 @@ size_t EpochManager::pending_retired()
 
 void EpochManager::defer(Deferred *entry) noexcept
 {
+    if (lifetime_ && lifetime_->queue) {
+        lifetime_->defer(entry);
+        return;
+    }
     auto *head = deferred_.load(std::memory_order_relaxed);
     do {
         entry->next = head;
@@ -259,8 +304,9 @@ size_t EpochManager::reclaim_deferred_locked()
 size_t EpochManager::active_guards()
 {
     // Threads currently inside a guard (per-thread, not per-nested-guard).
-    size_t n = 0;
-    for (Participant *p = participants_.load(std::memory_order_acquire); p != nullptr; p = p->next) {
+    size_t n            = 0;
+    auto  &participants = lifetime_ && lifetime_->queue ? lifetime_->live_participants : participants_;
+    for (Participant *p = participants.load(std::memory_order_acquire); p != nullptr; p = p->next) {
         if (p->local_epoch.load(std::memory_order_seq_cst) != 0) {
             ++n;
         }

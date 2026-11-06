@@ -1,6 +1,11 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+mod engine;
+mod runtime;
+pub use engine::TreeEngineConfig;
+pub use runtime::{TreeBindingConfig, TreeHostConfig, TreeResourceConfig, TreeRuntimeConfig};
+
 use std::ptr::NonNull;
 use std::sync::Arc;
 
@@ -111,6 +116,14 @@ pub enum KeyRange {
 /// Engine configuration. `path = None` selects an in-memory store.
 #[derive(Debug, Clone, Default)]
 pub struct Config {
+    /// Shared host CPU/backend pools and allocation budgets. Each Tree keeps
+    /// its own publication state and page cache within this runtime. `None`
+    /// uses the process-wide standalone runtime.
+    pub runtime: Option<Arc<crate::TreeRuntime>>,
+    /// Per-Tree queue and memory limits, including on the process-wide host.
+    pub runtime_binding: crate::TreeBindingOptions,
+    /// Source, handoff, maintenance and cache work windows.
+    pub tuning: crate::TreeTuningOptions,
     /// Optional injected durable backend. When set, `path` and `backend` are
     /// ignored by the C++ constructor.
     pub page_store: Option<Arc<PageStore>>,
